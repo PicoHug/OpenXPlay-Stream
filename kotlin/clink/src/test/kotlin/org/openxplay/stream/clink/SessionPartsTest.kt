@@ -103,6 +103,22 @@ class SessionPartsTest {
         assertTrue(clip.frames.flatMap { org.openxplay.stream.core.codec.Nal.units(it).toList() }
             .none { (it[0].toInt() ushr 1) and 63 == 35 })
     }
+    @Test fun `1080p placeholder bundles load and match the negotiated mode`() {
+        for (size in listOf(1280 to 720, 1920 to 1080)) {
+            val avc = BundledPlaceholderVideo(size.first, size.second)
+            val clip = BundledHevcPlaceholderVideo(size.first, size.second)
+            assertEquals(size, avc.format.width to avc.format.height)
+            assertEquals(size, clip.format.width to clip.format.height)
+            assertEquals(30, avc.frames.size); assertEquals(30, clip.frames.size)
+            assertEquals(avc.fps, clip.fps)
+            assertTrue(org.openxplay.stream.core.codec.Nal.isKeyFrame(avc.frames.first(), VideoCodec.H264))
+            assertTrue(org.openxplay.stream.core.codec.Nal.isKeyFrame(clip.frames.first(), VideoCodec.H265))
+            // 1080p needs Main Level 4.1; the 720p bundle keeps level 3.1.
+            val config = org.openxplay.stream.core.codec.HevcConfig.parse(clip.format.config)
+            assertEquals(1, config.profile)
+            assertEquals(if (size.first >= 1920) 123 else 93, config.level)
+        }
+    }
     @Test fun `HEVC placeholder TS decodes all thirty frames`() {
         val ffprobe = java.nio.file.Path.of("/opt/homebrew/bin/ffprobe")
         org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.isExecutable(ffprobe))
