@@ -20,7 +20,6 @@ import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
-import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
 import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent } from './fullscreen';
 import './style.css';
@@ -54,11 +53,12 @@ pluginSwitch.checked = pluginSlot.preference;
 pluginSwitch.onchange = () => pluginSlot.enable(pluginSwitch.checked);
 
 const displayGate = new DisplaySettingsGate(), displayDebounce = new DisplayDebounce();
-let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', screenWidth: 200 };
+let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', screenWidth: 200, videoCodec: 'auto' };
 function updateDisplaySettings(): void {
   element('display-settings').hidden = !displayGate.supported;
   element<HTMLSelectElement>('resolution').value = currentDisplaySettings.resolution;
   element<HTMLSelectElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
+  element<HTMLSelectElement>('relay-video-codec').value = currentDisplaySettings.videoCodec;
 }
 function updatePictureSize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
@@ -142,7 +142,6 @@ function updateSettings(): void {
   for (const key of ['sound', 'developer'] as const) element<HTMLInputElement>(key).checked = preferences[key];
   debug.hidden = !preferences.developer;
   element<HTMLSelectElement>('frame-rate').value = preferences.frameRate;
-  element<HTMLSelectElement>('video-codec').value = preferences.videoCodec;
   element<HTMLSelectElement>('playback').value = preferences.playback;
   element('playback-hint').textContent = text[playbackHint(preferences.playback)];
   element('fit').setAttribute('aria-pressed', String(preferences.fit === 'fit'));
@@ -219,9 +218,9 @@ for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
   releaseAll(); preferences.fit = fit; storage.save(preferences); updateSettings(); post({ type: 'fit', fit });
 };
 const restartGate = new RestartGate();
-for (const id of ['resolution', 'screen-width']) element<HTMLSelectElement>(id).onchange = () => {
+for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLSelectElement>(id).onchange = () => {
   if (!initialized || !displayGate.supported || !restartGate.allow(performance.now())) { updateDisplaySettings(); return; }
-  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth']);
+  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLSelectElement>('relay-video-codec').value as DisplaySettings['videoCodec']);
   if (message) post(message);
   updateDisplaySettings();
 };
@@ -245,13 +244,6 @@ element<HTMLSelectElement>('playback').onchange = event => {
   preferences.playback = mode; storage.save(preferences); updateSettings();
   if (!initialized) return;
   hello = withPlayback(hello, mode); post({ type: 'hello', hello });
-};
-element<HTMLSelectElement>('video-codec').onchange = event => {
-  const codec = videoCodecPreference((event.target as HTMLSelectElement).value);
-  if (codec === preferences.videoCodec) return;
-  preferences.videoCodec = codec; storage.save(preferences); updateSettings();
-  if (!initialized) return;
-  hello = withVideoCodec(hello, codec); post({ type: 'hello', hello });
 };
 element('mic-retry').onclick = () => { if (requestedMic?.request) void microphone(requestedMic.request, requestedMic.token); };
 for (const id of ['sound-hint', 'card-sound']) element(id).onclick = () => { void audioContext?.resume().then(syncSound).catch(() => {}); };
@@ -476,7 +468,7 @@ async function start(): Promise<void> {
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
       displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
-    hello = withVideoCodec(withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback), preferences.videoCodec);
+    hello = withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback);
     displayReportSeed(); resize();
     worker?.terminate(); void audioContext?.close(); audioContext = null; gain = null;
     let workerFailed = false;

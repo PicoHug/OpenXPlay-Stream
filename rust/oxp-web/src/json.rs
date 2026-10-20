@@ -63,10 +63,14 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                 "pong",
                 "stats",
                 "receiver-info",
+                "display-settings",
+                "fullscreen-exit",
             ]
             .contains(&t),
             Direction::Relay => [
                 "welcome",
+                "display-settings",
+                "view-area",
                 "session",
                 "video-format",
                 "audio-format",
@@ -111,42 +115,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                 check(string(&d["codecString"], true) && d["hardware"].is_boolean())?;
             }
             for d in v["displays"].as_array().ok_or("Displays")? {
-                fields(
-                    d,
-                    &["screen", "width", "height", "dpr", "refreshHz", "safeArea"],
-                    &["frameRate", "sustainedFps"],
-                )?;
-                check(
-                    int(&d["screen"], 255)
-                        && int(&d["width"], 9007199254740991)
-                        && num(&d["width"], true)
-                        && int(&d["height"], 9007199254740991)
-                        && num(&d["height"], true)
-                        && num(&d["dpr"], true)
-                        && num(&d["refreshHz"], true),
-                )?;
-                if let Some(rate) = d.get("frameRate") {
-                    check(matches!(
-                        rate.as_str(),
-                        Some(
-                            "AUTO"
-                                | "FPS_30"
-                                | "FPS_35"
-                                | "FPS_40"
-                                | "FPS_45"
-                                | "FPS_50"
-                                | "FPS_55"
-                                | "FPS_60"
-                        )
-                    ))?;
-                }
-                if let Some(fps) = d.get("sustainedFps") {
-                    check(num(fps, true))?;
-                }
-                fields(&d["safeArea"], &["left", "top", "right", "bottom"], &[])?;
-                for k in ["left", "top", "right", "bottom"] {
-                    check(num(&d["safeArea"][k], false))?;
-                }
+                display(d)?;
             }
             for a in v["audio"].as_array().ok_or("Audio")? {
                 check(matches!(a.as_str(), Some("AAC_LC" | "OPUS" | "PCM_S16LE")))?;
@@ -164,7 +133,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                     "attribution",
                     "projectUrl",
                 ],
-                &["plugins"],
+                &["plugins", "features", "receiverBuild", "relay"],
             )?;
             check(
                 int(&v["version"], 0)
@@ -173,10 +142,68 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                     && v["sourceUrl"].as_str().is_some_and(valid_url)
                     && v["projectUrl"].as_str().is_some_and(valid_url),
             )?;
+            if let Some(features) = v.get("features") {
+                check(
+                    features
+                        .as_array()
+                        .is_some_and(|a| a.iter().all(|f| string(f, true))),
+                )?;
+            }
+            if let Some(build) = v.get("receiverBuild") {
+                check(build.as_str().is_some_and(|s| {
+                    !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control)
+                }))?;
+            }
+            if let Some(relay) = v.get("relay") {
+                fields(relay, &["name", "version"], &[])?;
+                for k in ["name", "version"] {
+                    check(relay[k].as_str().is_some_and(|s| {
+                        !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control)
+                    }))?;
+                }
+            }
             if let Some(p) = v.get("plugins") {
                 check(p.is_object() && p["host"] == "/plugins/host/index.html")?;
             }
             oxp_wire::validate_json(&json!({"type":"session","session":v["session"]}))?;
+        }
+        "display-settings" => {
+            fields(v, &["type", "resolution", "screenWidth"], &["videoCodec"])?;
+            let mut complete = v.clone();
+            if complete.get("videoCodec").is_none() {
+                check(!matches!(direction, Some(Direction::Relay)))?;
+                complete["videoCodec"] = json!("auto");
+            }
+            oxp_wire::decode_display_settings(&complete)?;
+        }
+        "view-area" => {
+            fields(
+                v,
+                &[
+                    "type",
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "canvasWidth",
+                    "canvasHeight",
+                ],
+                &[],
+            )?;
+            let mut area = v.clone();
+            area.as_object_mut().unwrap().remove("type");
+            oxp_wire::decode_area(&area)?;
+        }
+        "fullscreen-exit" => {
+            fields(v, &["type", "hiddenMs", "display"], &["autoRestore"])?;
+            check(v["hiddenMs"].is_null() || num(&v["hiddenMs"], false))?;
+            display(&v["display"])?;
+            if let Some(result) = v.get("autoRestore") {
+                check(matches!(
+                    result.as_str(),
+                    Some("restored" | "denied" | "off")
+                ))?;
+            }
         }
         "pause" => {
             fields(v, &["type", "screen", "paused"], &[])?;
@@ -331,4 +358,55 @@ pub fn audio(stream: u32, f: Option<&AudioFormat>) -> Value {
 }
 pub fn microphone(stream: u32, r: Option<&MicRequest>) -> Value {
     json!({"type":"mic","stream":stream,"request":r.map(|r|json!({"codec":audio_codec(r.codec),"sampleRate":r.sample_rate,"channels":r.channels,"frameMs":r.frame_ms}))})
+}
+
+fn display(d: &Value) -> Result<()> {
+    fields(
+        d,
+        &["screen", "width", "height", "dpr", "refreshHz", "safeArea"],
+        &[
+            "frameRate",
+            "sustainedFps",
+            "viewport",
+            "fullscreen",
+            "fullscreenPreferred",
+        ],
+    )?;
+    check(
+        int(&d["screen"], 255)
+            && int(&d["width"], 9007199254740991)
+            && num(&d["width"], true)
+            && int(&d["height"], 9007199254740991)
+            && num(&d["height"], true)
+            && num(&d["dpr"], true)
+            && num(&d["refreshHz"], true),
+    )?;
+    if let Some(rate) = d.get("frameRate") {
+        check(matches!(
+            rate.as_str(),
+            Some(
+                "AUTO" | "FPS_30" | "FPS_35" | "FPS_40" | "FPS_45" | "FPS_50" | "FPS_55" | "FPS_60"
+            )
+        ))?;
+    }
+    if let Some(fps) = d.get("sustainedFps") {
+        check(num(fps, true))?;
+    }
+    fields(&d["safeArea"], &["left", "top", "right", "bottom"], &[])?;
+    for k in ["left", "top", "right", "bottom"] {
+        check(num(&d["safeArea"][k], false))?;
+    }
+
+    if let Some(viewport) = d.get("viewport") {
+        fields(viewport, &["width", "height"], &[])?;
+        for k in ["width", "height"] {
+            check(int(&viewport[k], 9007199254740991) && num(&viewport[k], true))?;
+        }
+    }
+    for key in ["fullscreen", "fullscreenPreferred"] {
+        if let Some(value) = d.get(key) {
+            check(value.is_boolean())?;
+        }
+    }
+    Ok(())
 }

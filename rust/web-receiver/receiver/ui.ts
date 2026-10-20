@@ -17,9 +17,10 @@ export function selectLanguage(languages: readonly string[]): Language {
 }
 export const strings = {
   en: {
+    resolution: 'Resolution', native: 'Native', wholeScreen: 'Whole screen', nativeHint: 'Native is sharpest and needs more Wi-Fi bandwidth.', screenWidth: 'CarPlay screen width', screenWidthHint: 'Larger values show more icons on one page.', fullscreenRestore: 'Tap to return to full screen', fullscreenHint: 'Tap to return to full screen',
     frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying… CarPlay reconnects in a few seconds',
-    videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'H.264 only',
-    codecHint: 'H.264 is the most compatible. Choose it if this screen shows no picture with H.265.',
+    videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'Force H.264', codecH265: 'Force H.265',
+    codecHint: 'Automatic uses H.265 when this browser can decode it in hardware and falls back to H.264 if it fails. The forced choices are for testing.',
     codecInUseH264: 'Now using H.264.', codecInUseH265: 'Now using H.265.',
     playback: 'Playback', smart: 'Smart', quality: 'Quality', speed: 'Speed',
     smartHint: 'Balances smoothness and delay for your network.', qualityHint: 'Smoothest motion, with a little more delay.',
@@ -50,9 +51,10 @@ export const strings = {
     attempt: 'Attempt {attempt} · {seconds} s until retry. Check your relay and network.',
   },
   'zh-CN': {
+    resolution: '分辨率', native: '原画', wholeScreen: '整个屏幕', nativeHint: '原画最清晰，需要更多 Wi-Fi 带宽。', screenWidth: 'CarPlay 屏幕宽度', screenWidthHint: '数值越大，一页显示的图标越多。', fullscreenRestore: '轻触恢复全屏', fullscreenHint: '轻触恢复全屏',
     frameRate: '帧率', automatic: '自动', applying: '正在应用… CarPlay 将在几秒后重新连接',
-    videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '只用 H.264',
-    codecHint: 'H.264 兼容性最好。如果这台车机用 H.265 时没有画面，请选择它。',
+    videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '强制 H.264', codecH265: '强制 H.265',
+    codecHint: '自动：这个浏览器能硬件解码 H.265 时使用 H.265，出问题时自动改用 H.264。强制选项用于测试。',
     codecInUseH264: '当前使用 H.264。', codecInUseH265: '当前使用 H.265。',
     playback: '播放模式', smart: '智能', quality: '质量优先', speed: '速度优先',
     smartHint: '根据网络自动平衡流畅度和延迟。', qualityHint: '画面最流畅，延迟略高。', speedHint: '延迟最低，可能跳过部分画面。',
@@ -100,7 +102,7 @@ export class ReceiverPreferences {
     try { if (value === null) this.storage().removeItem(`oxp.${key}`); else this.storage().setItem(`oxp.${key}`, value); } catch { }
   }
   load(fragment: URLSearchParams): Preferences {
-    return { videoCodec: videoCodecPreference(this.read('videoCodec')), frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
+    return { videoCodec: videoCodecPreference(null), frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
       fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true', gear: parseGearPosition(this.read('gear')) };
   }
   save(preferences: Preferences): void {

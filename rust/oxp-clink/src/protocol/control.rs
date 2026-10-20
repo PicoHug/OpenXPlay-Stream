@@ -46,6 +46,9 @@ pub fn display(body: &[u8], fallback: &DisplayInfo) -> Result<DisplayInfo> {
         safe_area: Default::default(),
         frame_rate: fallback.frame_rate,
         sustained_fps: fallback.sustained_fps,
+        viewport: None,
+        fullscreen: None,
+        fullscreen_preferred: None,
     })
 }
 /// Head-unit display assumed until the head unit reports its own; Carlink sinks run at 30 FPS.

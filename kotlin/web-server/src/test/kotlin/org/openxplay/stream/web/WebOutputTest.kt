@@ -606,11 +606,11 @@ class WebOutputTest {
     }
 
     /** Server and client contexts for a generated localhost certificate. */
-    private fun tlsContexts(): Pair<SSLContext, SSLContext> {
+    private fun tlsContexts(name: String = "server"): Pair<SSLContext, SSLContext> {
         val keytool = Path.of(System.getProperty("java.home"), "bin", "keytool")
         assumeTrue(Files.isExecutable(keytool), "JDK keytool unavailable")
-        val storePath = root.resolve("server.p12")
-        val log = root.resolve("keytool.log")
+        val storePath = root.resolve("$name.p12")
+        val log = root.resolve("$name-keytool.log")
         val process = ProcessBuilder(keytool.toString(), "-genkeypair", "-alias", "server", "-keyalg", "RSA", "-keysize", "2048",
             "-storetype", "PKCS12", "-keystore", storePath.toString(), "-storepass", "test-password", "-keypass", "test-password",
             "-dname", "CN=localhost", "-validity", "1", "-ext", "SAN=dns:localhost,ip:127.0.0.1", "-noprompt")
@@ -625,6 +625,51 @@ class WebOutputTest {
         val trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(store) }
         val clientContext = SSLContext.getInstance("TLS").apply { init(null, trust.trustManagers, null) }
         return serverContext to clientContext
+    }
+
+    @Test fun tlsUpdateKeepsListenerAndExistingWebSocket() {
+        val (serverA, clientA) = tlsContexts("a")
+        val (serverB, clientB) = tlsContexts("b")
+        val web = output(serverA); web.open(NoopHost)
+        try {
+            val port = web.awaitListening()
+            val socketA = clientA.socketFactory.createSocket("127.0.0.1", port) as SSLSocket
+            TestClient(socketA).use { first ->
+                first.hello(); assertEquals("welcome", first.json()["type"]!!.jsonPrimitive.content)
+                val certificateA = socketA.session.peerCertificates.first().encoded
+                web.updateTls(serverB)
+                assertEquals(port, web.awaitListening())
+                val socketB = clientB.socketFactory.createSocket("127.0.0.1", port) as SSLSocket
+                TestClient(socketB).use { second ->
+                    second.hello(); assertEquals("welcome", second.json()["type"]!!.jsonPrimitive.content)
+                    assertFalse(certificateA.contentEquals(socketB.session.peerCertificates.first().encoded))
+                }
+                first.send(9, byteArrayOf(1, 2, 3))
+                var reply = first.read()
+                repeat(20) { if (reply.opcode != 10) reply = first.read() }
+                assertEquals(10, reply.opcode)
+                assertContentEquals(byteArrayOf(1, 2, 3), reply.payload)
+            }
+        } finally { web.close() }
+    }
+
+    @Test fun stalledTlsHandshakeDoesNotBlockOtherConnections() {
+        val (server, client) = tlsContexts()
+        val web = output(server); web.open(NoopHost)
+        try {
+            val port = web.awaitListening()
+            Socket("127.0.0.1", port).use {
+                val socket = client.socketFactory.createSocket("127.0.0.1", port) as SSLSocket
+                TestClient(socket).use { connected ->
+                    connected.hello(); assertEquals("welcome", connected.json()["type"]!!.jsonPrimitive.content)
+                }
+            }
+        } finally { web.close() }
+    }
+
+    @Test fun plainOutputRejectsTlsUpdates() {
+        val web = output()
+        assertFailsWith<IllegalStateException> { web.updateTls(SSLContext.getDefault()) }
     }
 
     @Test fun tlsHandshakeUsingGeneratedPkcs12() {

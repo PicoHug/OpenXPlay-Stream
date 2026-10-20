@@ -205,6 +205,13 @@ impl Consumer {
         }
         match m {
             Message::Json(v) => match v["type"].as_str().unwrap_or("") {
+                "display-settings" => {
+                    output.display_settings(oxp_wire::decode_display_settings(&v)?)
+                }
+                "view-area" => {
+                    let (screen, area) = oxp_wire::decode_view_area(&v)?;
+                    output.view_area(screen, area);
+                }
                 "context" => output.context(oxp_wire::decode_context(&v)?),
                 "input-capabilities" => output.input_capabilities(input_capabilities(&v)?),
                 "session" => {
@@ -301,10 +308,10 @@ impl Consumer {
                     );
                 }
                 "error" => {
-                    return Err(format!("Peer error: {}: {}", v["code"], v["message"]).into())
+                    return Err(format!("Peer error: {}: {}", v["code"], v["message"]).into());
                 }
                 "hello" | "capabilities" | "client" | "restart" | "keyframe" | "stats" => {
-                    return Err("Unexpected producer message".into())
+                    return Err("Unexpected producer message".into());
                 }
                 _ => {}
             },

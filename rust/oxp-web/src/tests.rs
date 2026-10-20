@@ -1382,8 +1382,11 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
     );
     let budget_ns = 100_000_000;
     // Unsent bytes allowed in the kernel: the configured limit, plus one segment that Linux may
-    // queue beyond it (bounded by half the receiver's window).
-    let kernel_bytes = config.unsent_limit_bytes as f64 + 32.0 * 1024.0;
+    // queue beyond it. Linux checks the limit only before it starts a new segment, and later writes
+    // fill the unsent tail segment up to the size goal without checking it again. The size goal is
+    // half the receiver's largest window, at most one 64 KiB GSO segment; receive autotuning grows
+    // this reader's window beyond 100 KB, so on loopback the segment reaches 55 KB.
+    let kernel_bytes = config.unsent_limit_bytes as f64 + 64.0 * 1024.0;
     let mut kernel_seen = false;
     let sample_times: Vec<i64> = samples.iter().map(|(at, _)| *at).collect();
     for &(index, received_at, written_at) in &written {

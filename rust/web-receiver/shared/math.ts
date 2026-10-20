@@ -51,3 +51,14 @@ export function renderQueuePolicy<T>(frames: readonly T[], incoming: T, depth: n
   return { frames: [...kept, incoming], skipped: frames.slice(0, frames.length - kept.length) };
 }
 export const nowUs = (): bigint => BigInt(Math.round(performance.now() * 1000));
+
+export interface PictureArea { x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
+export function pictureSource(width: number, height: number, area?: PictureArea): Rect {
+  if (!area) return { x: 0, y: 0, width, height };
+  return { x: area.x * width / area.canvasWidth, y: area.y * height / area.canvasHeight,
+    width: area.width * width / area.canvasWidth, height: area.height * height / area.canvasHeight };
+}
+export function canvasTouch(point: { x: number; y: number } | null, area?: PictureArea): { x: number; y: number } | null {
+  if (!point || !area) return point;
+  return { x: (area.x + point.x * area.width) / area.canvasWidth, y: (area.y + point.y * area.height) / area.canvasHeight };
+}

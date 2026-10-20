@@ -41,6 +41,8 @@ public class WireOutput(
                         is WireMessage.Unknown -> Unit
                         is WireMessage.Capabilities -> host.capabilities(message.value)
                         is WireMessage.Client -> Unit
+                        // Display-settings requests have no Kotlin hub route; Android passes them in-process.
+                        is WireMessage.DisplaySettings -> Unit
                         WireMessage.Restart -> if (inputCapabilities.reconfigure != ReconfigureCost.UNSUPPORTED) host.requestRestart(origin)
                         is WireMessage.Keyframe -> host.control(ControlEvent.KeyFrameRequest(message.screen, origin))
                         is WireMessage.Stats -> host.stats(message.value.copy(origin = origin))

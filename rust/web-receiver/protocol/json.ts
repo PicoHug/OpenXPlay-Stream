@@ -12,6 +12,7 @@ export type PlaybackMode = 'SMART' | 'QUALITY' | 'SPEED';
 export interface DisplayInfo {
   screen: number; width: number; height: number; dpr: number; refreshHz: number;
   frameRate?: FrameRatePreference; sustainedFps?: number;
+  viewport?: { width: number; height: number }; fullscreen?: boolean; fullscreenPreferred?: boolean;
   safeArea: { top: number; right: number; bottom: number; left: number };
 }
 export interface Hello {
@@ -32,8 +33,12 @@ export interface Stats {
   type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
-export type JsonMessage = Hello | { type: 'restart' } |
-  { type: 'welcome'; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
+export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264' }
+export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
+export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
+export interface WelcomeDetails { features?: string[]; receiverBuild?: string; relay?: { name: string; version: string } }
+export type JsonMessage = DisplaySettings | ViewArea | FullscreenExit | Hello | { type: 'restart' } |
+  (WelcomeDetails & { type: 'welcome'; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string }) |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
   { type: 'audio-format'; stream: number; format: AudioFormat | null } |
@@ -73,6 +78,8 @@ const audioCodec = literal('AAC_LC', 'OPUS', 'PCM_S16LE');
 const session = object({ id: i64, phase: literal('CONNECTING', 'ACTIVE', 'RECONNECTING', 'ENDED'), reason: optional(str) });
 const display = object({ screen: range(255), width: x => int(x) && positive(x), height: x => int(x) && positive(x), dpr: positive, refreshHz: positive,
   frameRate: optional(literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60')), sustainedFps: optional(positive),
+  viewport: optional(object({ width: x => int(x) && positive(x), height: x => int(x) && positive(x) })),
+  fullscreen: optional(bool), fullscreenPreferred: optional(bool),
   safeArea: object({ top: num, right: num, bottom: num, left: num }) });
 const video = object({ codec: literal('H264', 'H265'), codecString: nonempty, config: x => nonempty(x) && base64(x),
   width: x => int(x) && positive(x), height: x => int(x) && positive(x), fpsHint: optional(positive) });
@@ -92,11 +99,16 @@ const diagnosticFields = [
   'renderLatencyP50Ms', 'renderLatencyP95Ms', 'eventLoopLagAvgMs', 'eventLoopLagMaxMs',
   'longTaskCount', 'longTaskTotalMs', 'usedJSHeapSize', 'renderDepth',
 ];
+const boundedText: Validator = x => nonempty(x) && (x as string).length <= 128 && !/[\x00-\x1f\x7f]/.test(x as string);
+const areaShape = object({ type: literal('view-area'), x: int, y: int, width: x => int(x) && positive(x), height: x => int(x) && positive(x), canvasWidth: x => int(x) && positive(x), canvasHeight: x => int(x) && positive(x) });
 const schemas: Record<string, Validator> = {
+  'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300), videoCodec: optional(literal('auto', 'h265', 'h264')) }),
+  'view-area': x => areaShape(x) && (() => { const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight; })(),
+  'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
-  welcome: object({ plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
+  welcome: object({ features: optional(array(nonempty)), receiverBuild: optional(boundedText), relay: optional(object({ name: boundedText, version: boundedText })), plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
   session: object({ type: literal('session'), session }),
   'video-format': object({ type: literal('video-format'), screen: range(255), format: nullable(video) }),
   'audio-format': object({ type: literal('audio-format'), stream: range(255), format: nullable(audio) }),
@@ -110,8 +122,8 @@ const schemas: Record<string, Validator> = {
     decodedLatencyMs: nullable(num), renderedLatencyMs: nullable(num), clockOffsetUs: nullable(i64), rttUs: nullable(i64) })),
   error: object({ type: literal('error'), code: nonempty, message: str }),
 };
-const clientTypes = ['hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
-const relayTypes = ['welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
+const clientTypes = ['display-settings', 'fullscreen-exit', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
+const relayTypes = ['display-settings', 'view-area', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;
   if (typeof input === 'string') {
@@ -120,6 +132,7 @@ export function parseMessage(input: string | unknown, direction?: Direction): Js
   check(typeof x === 'object' && x !== null, 'Expected JSON object');
   const type = (x as { type?: unknown }).type;
   check(typeof type === 'string' && Object.hasOwn(schemas, type) && schemas[type](x), 'Invalid JSON message');
+  if (type === 'display-settings' && direction === 'relay-to-client') check(literal('auto', 'h265', 'h264')((x as DisplaySettings).videoCodec), 'Missing video codec');
   if (direction) check((direction === 'client-to-relay' ? clientTypes : relayTypes).includes(type), 'Wrong message direction');
   return x as JsonMessage;
 }

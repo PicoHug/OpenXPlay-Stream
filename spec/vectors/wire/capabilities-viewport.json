@@ -1,0 +1,38 @@
+{
+  "type": "capabilities",
+  "latency": "INTERACTIVE",
+  "decoders": [
+    {
+      "codecString": "avc1.42E01E",
+      "hardware": true
+    }
+  ],
+  "displays": {
+    "0": {
+      "widthPx": 640,
+      "heightPx": 480,
+      "densityDpi": 160,
+      "refreshHz": 60.0,
+      "safeArea": {
+        "left": 0,
+        "top": 0,
+        "right": 0,
+        "bottom": 0
+      },
+      "viewport": {
+        "widthPx": 1533,
+        "heightPx": 907
+      },
+      "fullscreen": false,
+      "fullscreenPreferred": true
+    }
+  },
+  "touch": 10,
+  "keys": [
+    0,
+    1,
+    10
+  ],
+  "audio": [],
+  "microphone": false
+}

@@ -102,6 +102,17 @@ public object StreamWireCodec {
     private fun knownJson(message: WireMessage): JsonObject = buildJsonObject {
         when (message) {
             is WireMessage.Context, is WireMessage.Unknown -> error("Extension handled separately")
+            is WireMessage.DisplaySettings -> {
+                put("type", "display-settings"); put("resolution", message.resolution)
+                put("screenWidth", message.screenWidth); put("videoCodec", message.videoCodec)
+            }
+            is WireMessage.ViewAreaMessage -> {
+                put("type", "view-area"); put("screen", message.screen.value)
+                put("area", message.area?.let { a -> buildJsonObject {
+                    put("x", a.x); put("y", a.y); put("width", a.width); put("height", a.height)
+                    put("canvasWidth", a.canvasWidth); put("canvasHeight", a.canvasHeight)
+                } } ?: JsonNull)
+            }
             is WireMessage.Hello -> {
                 put("type", "hello"); put("version", message.version)
                 put("role", message.role.name.lowercase()); put("name", message.name); put("client", message.client)
@@ -152,6 +163,9 @@ public object StreamWireCodec {
                         })
                         if (d.frameRate != FrameRatePreference.AUTO) put("frameRate", d.frameRate.name)
                         d.sustainedFps?.let { put("sustainedFps", it) }
+                        d.viewport?.let { put("viewport", buildJsonObject { put("widthPx", it.width); put("heightPx", it.height) }) }
+                        d.fullscreen?.let { put("fullscreen", it) }
+                        d.fullscreenPreferred?.let { put("fullscreenPreferred", it) }
                     })
                 } })
                 put("touch", c.touch); put("keys", keys(c.keys))
@@ -190,6 +204,25 @@ public object StreamWireCodec {
     private fun keys(values: Set<KeyCode>): JsonArray = buildJsonArray { values.sortedBy { it.wireCode }.forEach { add(it.wireCode) } }
 
     private fun parse(o: JsonObject, allowUnknown: Boolean): WireMessage = when (o.string("type")) {
+        "display-settings" -> {
+            o.fields("resolution", "screenWidth", "videoCodec")
+            val resolution = o.string("resolution"); val width = o.int("screenWidth"); val codec = o.string("videoCodec")
+            check(resolution in setOf("auto", "native", "1080p", "720p", "screen") && width in setOf(125, 200, 250, 300)
+                && codec in setOf("auto", "h265", "h264"), "Invalid display settings")
+            WireMessage.DisplaySettings(resolution, width, codec)
+        }
+        "view-area" -> {
+            o.fields("screen", "area")
+            val a = o.getValue("area")
+            WireMessage.ViewAreaMessage(ScreenId(o.int("screen", 0, 255)), if (a == JsonNull) null else {
+                val v = a.jsonObject
+                v.fields("x", "y", "width", "height", "canvasWidth", "canvasHeight", type = false)
+                WireViewArea(v.int("x"), v.int("y"), v.int("width", 1), v.int("height", 1),
+                    v.int("canvasWidth", 1), v.int("canvasHeight", 1)).also {
+                    check(it.x.toLong() + it.width <= it.canvasWidth && it.y.toLong() + it.height <= it.canvasHeight, "Invalid view area")
+                }
+            })
+        }
         "context" -> { o.fields("topic", "value"); WireMessage.Context(ContextJson.decode(o)) }
         "hello" -> {
             o.fields("version", "role", "name", "client")
@@ -256,13 +289,16 @@ public object StreamWireCodec {
                 val screen = key.toInt(); check(screen in 0..255 && key == screen.toString(), "Invalid screen")
                 val d = value.jsonObject
                 d.fields("widthPx", "heightPx", "densityDpi", "refreshHz", "safeArea",
-                    optional = setOf("frameRate", "sustainedFps"), type = false)
+                    optional = setOf("frameRate", "sustainedFps", "viewport", "fullscreen", "fullscreenPreferred"), type = false)
                 val a = d.getValue("safeArea").jsonObject
                 a.fields("left", "top", "right", "bottom", type = false)
                 ScreenId(screen) to DisplayInfo(d.int("widthPx", 1), d.int("heightPx", 1), d.int("densityDpi", 1),
                     d.number("refreshHz", true), SafeArea(a.int("left"), a.int("top"), a.int("right"), a.int("bottom")),
                     d["frameRate"]?.let { FrameRatePreference.valueOf(d.string("frameRate")) } ?: FrameRatePreference.AUTO,
-                    d["sustainedFps"]?.let { d.number("sustainedFps", true) })
+                    d["sustainedFps"]?.let { d.number("sustainedFps", true) },
+                    d["viewport"]?.let { it.jsonObject.let { v ->
+                        v.fields("widthPx", "heightPx", type = false); Viewport(v.int("widthPx", 1), v.int("heightPx", 1))
+                    } }, d["fullscreen"]?.let { d.bool("fullscreen") }, d["fullscreenPreferred"]?.let { d.bool("fullscreenPreferred") })
             }.toMap()
             val decoders = o.getValue("decoders").jsonArray.map { e -> e.jsonObject.let {
                 it.fields("codecString", "hardware", type = false)

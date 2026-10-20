@@ -25,13 +25,38 @@ class StreamWireCodecTest {
         }
     }
     @Test fun everyJsonVectorRoundTrips() {
-        listOf("hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
+        listOf("capabilities-viewport", "display-settings-auto", "display-settings-native", "display-settings-1080p", "display-settings-720p", "display-settings-screen", "view-area", "view-area-clear", "hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
             val text = resource("wire/$name.json").trim()
             val message = StreamWireCodec.decode(text.toByteArray())
             assertEquals(Json.parseToJsonElement(text),
                 Json.parseToJsonElement(StreamWireCodec.encode(message).toString(Charsets.UTF_8)))
         }
     }
+    @Test fun settingsAreasAndViewportAreStrict() {
+        val settings = Json.parseToJsonElement(resource("wire/display-settings-auto.json")).jsonObject
+        for ((key, bad) in listOf("resolution" to JsonPrimitive("bad"), "screenWidth" to JsonPrimitive(150),
+            "videoCodec" to JsonPrimitive("H265"), "videoCodec" to JsonNull)) {
+            assertFailsWith<WireFormatException> { StreamWireCodec.decode(JsonObject(settings + (key to bad)).toString().toByteArray()) }
+        }
+        for (key in listOf("resolution", "screenWidth", "videoCodec")) {
+            assertFailsWith<WireFormatException> { StreamWireCodec.decode(JsonObject(settings - key).toString().toByteArray()) }
+        }
+        val view = Json.parseToJsonElement(resource("wire/view-area.json")).jsonObject
+        val area = view.getValue("area").jsonObject
+        for ((key, bad) in listOf("x" to JsonPrimitive(-1), "width" to JsonPrimitive(0),
+            "height" to JsonPrimitive(1041), "canvasWidth" to JsonNull, "x" to JsonPrimitive(Int.MAX_VALUE))) {
+            val invalid = JsonObject(view + ("area" to JsonObject(area + (key to bad))))
+            assertFailsWith<WireFormatException> { StreamWireCodec.decode(invalid.toString().toByteArray()) }
+        }
+        val caps = Json.parseToJsonElement(resource("wire/capabilities-viewport.json")).jsonObject
+        val display = caps.getValue("displays").jsonObject.getValue("0").jsonObject
+        for ((key, bad) in listOf("viewport" to JsonNull, "fullscreen" to JsonPrimitive(1), "fullscreenPreferred" to JsonNull,
+            "viewport" to buildJsonObject { put("widthPx", 0); put("heightPx", 100) })) {
+            val invalid = JsonObject(caps + ("displays" to buildJsonObject { put("0", JsonObject(display + (key to bad))) }))
+            assertFailsWith<WireFormatException> { StreamWireCodec.decode(invalid.toString().toByteArray()) }
+        }
+    }
+
     @Test fun existingWebJsonFieldsRoundTrip() {
         listOf("restart", "session", "video-format", "audio-format", "mic", "keyframe", "stats", "error").forEach { name ->
             val text = resource("web/$name.json")

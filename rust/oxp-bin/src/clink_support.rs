@@ -174,10 +174,15 @@ impl OutputSink for Sink {
             let mut value = json!({"widthPx":d.width_px,"heightPx":d.height_px,"densityDpi":d.density_dpi,"refreshHz":d.refresh_hz,"safeArea":{"left":d.safe_area.left,"top":d.safe_area.top,"right":d.safe_area.right,"bottom":d.safe_area.bottom}});
             if d.frame_rate != FrameRatePreference::Auto { value["frameRate"] = json!(d.frame_rate.wire_name()); }
             if let Some(fps) = d.sustained_fps { value["sustainedFps"] = json!(fps); }
+            if let Some(v) = &d.viewport { value["viewport"] = json!({"widthPx":v.width_px,"heightPx":v.height_px}); }
+            if let Some(v) = d.fullscreen { value["fullscreen"] = json!(v); }
+            if let Some(v) = d.fullscreen_preferred { value["fullscreenPreferred"] = json!(v); }
             (s.to_string(), value)
         }).collect();
         let mut value = json!({"type":"capabilities","latency":match c.latency{LatencyClass::Interactive=>"INTERACTIVE",LatencyClass::Buffered=>"BUFFERED"},"decoders":c.decoders.iter().map(|d|json!({"codecString":d.codec_string,"hardware":d.hardware})).collect::<Vec<_>>(),"displays":displays,"touch":c.touch,"keys":c.keys.iter().map(|k|k.wire_code()).collect::<Vec<_>>(),"audio":c.audio.iter().map(|a|match a{AudioCodec::AacLc=>"AAC_LC",AudioCodec::Opus=>"OPUS",AudioCodec::PcmS16le=>"PCM_S16LE"}).collect::<Vec<_>>(),"microphone":c.microphone});
-        if c.prefers_h264 { value["prefersH264"] = json!(true); }
+        if c.prefers_h264 {
+            value["prefersH264"] = json!(true);
+        }
         self.send(json_message(value));
     }
     fn request_restart(&self, origin: Origin) {
@@ -189,6 +194,10 @@ impl OutputSink for Sink {
         let mut s = self.state.lock().unwrap();
 
         match e {
+            ControlEvent::DisplaySettings { settings, origin } => {
+                self.client(&mut s, &origin.client_id);
+                self.send(json_message(oxp_wire::display_settings(&settings)));
+            }
             ControlEvent::Touch {
                 screen,
                 contacts,
@@ -335,6 +344,12 @@ mod tests {
                     DisplayInfo {
                         frame_rate: preference,
                         sustained_fps: Some(55.0),
+                        viewport: Some(Viewport {
+                            width_px: 1533,
+                            height_px: 907,
+                        }),
+                        fullscreen: Some(false),
+                        fullscreen_preferred: Some(true),
                         ..DisplayInfo::default()
                     },
                 )]
@@ -352,9 +367,18 @@ mod tests {
                 panic!("expected capabilities")
             };
             oxp_wire::validate_json(&caps).unwrap();
-            assert_eq!(caps.get("prefersH264"), if rate == 35 { Some(&json!(true)) } else { None });
+            assert_eq!(
+                caps.get("prefersH264"),
+                if rate == 35 { Some(&json!(true)) } else { None }
+            );
             assert_eq!(caps["displays"]["0"]["frameRate"], format!("FPS_{rate}"));
             assert_eq!(caps["displays"]["0"]["sustainedFps"], 55.0);
+            assert_eq!(
+                caps["displays"]["0"]["viewport"],
+                json!({"widthPx":1533,"heightPx":907})
+            );
+            assert_eq!(caps["displays"]["0"]["fullscreen"], false);
+            assert_eq!(caps["displays"]["0"]["fullscreenPreferred"], true);
             let mut next = rx.recv().unwrap();
             if let Message::Json(v) = &next {
                 if v["type"] == "client" {

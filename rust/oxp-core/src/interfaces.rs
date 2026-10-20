@@ -15,6 +15,9 @@ pub trait ProjectionOutput: Send + Sync {
         false
     }
     fn on_context(&self, _update: crate::ContextUpdate) {}
+    fn on_display_settings(&self, _settings: DisplaySettings) {}
+    /// None clears the crop and declares view-area support.
+    fn on_view_area(&self, _screen: u32, _area: Option<ViewArea>) {}
     fn on_session(&self, state: &SessionState, config: &SessionConfig);
     fn on_video_format(&self, screen: u32, format: Option<Arc<VideoFormat>>);
     fn on_video_frame(&self, frame: VideoFrame);
@@ -26,6 +29,8 @@ pub trait ProjectionOutput: Send + Sync {
 
 /// In-process destination for a producer, independent of the selected outputs.
 pub trait InputSink: Send + Sync {
+    fn display_settings(&self, _settings: DisplaySettings) {}
+    fn view_area(&self, _screen: u32, _area: Option<ViewArea>) {}
     fn context(&self, _update: crate::ContextUpdate) {}
     fn input_capabilities(&self, _capabilities: InputCapabilities) {}
     fn session(&self, state: &SessionState);
@@ -36,6 +41,12 @@ pub trait InputSink: Send + Sync {
     fn microphone(&self, stream: u32, request: Option<MicRequest>);
 }
 impl<T: ProjectionOutput + ?Sized> InputSink for T {
+    fn display_settings(&self, settings: DisplaySettings) {
+        self.on_display_settings(settings);
+    }
+    fn view_area(&self, screen: u32, area: Option<ViewArea>) {
+        self.on_view_area(screen, area);
+    }
     fn context(&self, update: crate::ContextUpdate) {
         if self.wants_context() {
             self.on_context(update);

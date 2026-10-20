@@ -1,0 +1,35 @@
+{
+  "type": "hello",
+  "version": 0,
+  "token": "example-pairing-token",
+  "decoders": [
+    {
+      "codecString": "avc1.42E01F",
+      "hardware": false
+    }
+  ],
+  "displays": [
+    {
+      "screen": 0,
+      "width": 1280,
+      "height": 720,
+      "dpr": 1,
+      "refreshHz": 60,
+      "safeArea": {
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "viewport": {
+        "width": 1533,
+        "height": 907
+      },
+      "fullscreen": false,
+      "fullscreenPreferred": true
+    }
+  ],
+  "maxTouchContacts": 10,
+  "audio": [],
+  "microphone": false
+}

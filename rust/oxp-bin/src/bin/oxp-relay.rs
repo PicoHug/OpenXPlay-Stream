@@ -20,7 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE:&str="oxp-relay (--unix PATH | --stdio) [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Events use stdout with --unix, stderr with --stdio.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Events use stdout with --unix, stderr with --stdio.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -54,6 +54,8 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--token",
             "--pairing",
             "--source-url",
+            "--relay-name",
+            "--relay-version",
             "--tls-cert",
             "--tls-key",
             "--tls-self-signed",
@@ -75,6 +77,18 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--clink-transcode",
         ],
     )?;
+    if args.get("--relay-name").is_some() != args.get("--relay-version").is_some()
+        || ["--relay-name", "--relay-version"].iter().any(|k| {
+            args.get(k).is_some_and(|v| {
+                v.trim().is_empty() || v.len() > 128 || v.chars().any(char::is_control)
+            })
+        })
+    {
+        return Err(
+            "Supply both --relay-name and --relay-version (1–128 bytes, no control characters)"
+                .into(),
+        );
+    }
     advertise_address(&args)?;
     Ok((args, sans))
 }
@@ -470,6 +484,10 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
         if let Some(url) = args.get("--source-url") {
             config.source_url = url.into();
         }
+        config.relay = args.get("--relay-name").map(|name| oxp_web::RelayInfo {
+            name: name.into(),
+            version: args.get("--relay-version").unwrap().into(),
+        });
         config.diagnostics = Some(Arc::new(|id, value| {
             if value["type"] == "receiver-info" {
                 let mut info = value.clone();
@@ -531,7 +549,9 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
     std::thread::spawn(move || loop {
         let m = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(m) => m,
-            Err(RecvTimeoutError::Timeout) if !worker_stopped.load(Ordering::Acquire) => continue,
+            Err(RecvTimeoutError::Timeout) if !worker_stopped.load(Ordering::Acquire) => {
+                continue;
+            }
             Err(_) => break,
         };
         if let Err(e) = oxp_wire::write(&mut writer, &m) {
@@ -721,6 +741,29 @@ mod tests {
         fn disconnect(&self) -> oxp_clink::Result<()> {
             self.0.fetch_add(1, Ordering::AcqRel);
             Ok(())
+        }
+    }
+
+    #[test]
+    fn relay_identity_arguments_are_paired_and_bounded() {
+        assert!(parse_arguments(Vec::<String>::new()).is_ok());
+        assert!(parse_arguments(
+            [
+                "--relay-name",
+                "OpenXPlay Linux",
+                "--relay-version",
+                "0.1.3"
+            ]
+            .map(String::from)
+        )
+        .is_ok());
+        for values in [
+            vec!["--relay-name", "Linux"],
+            vec!["--relay-version", "0.1.3"],
+            vec!["--relay-name", "", "--relay-version", "0.1.3"],
+            vec!["--relay-name", "Linux", "--relay-version", "bad\nversion"],
+        ] {
+            assert!(parse_arguments(values.into_iter().map(String::from)).is_err());
         }
     }
 
@@ -1083,7 +1126,17 @@ malformed",
     #[test]
     fn interface_inventory_accepts_ip_and_ifconfig_formats() {
         let expected = interfaces(&[("usb0", "192.168.68.1"), ("wlan0", "192.168.5.173")]);
-        assert_eq!(parse_interfaces("2: usb0: <UP> inet 192.168.68.1/24 scope global usb0\n3: wlan0@if4: <UP> inet 192.168.5.173/24 scope global wlan0"), expected);
-        assert_eq!(parse_interfaces("usb0 Link encap:Ethernet\n          inet addr:192.168.68.1 Bcast:192.168.68.255\nwlan0: flags=8863<UP>\n\tinet 192.168.5.173 netmask 0xffffff00"), expected);
+        assert_eq!(
+            parse_interfaces(
+                "2: usb0: <UP> inet 192.168.68.1/24 scope global usb0\n3: wlan0@if4: <UP> inet 192.168.5.173/24 scope global wlan0"
+            ),
+            expected
+        );
+        assert_eq!(
+            parse_interfaces(
+                "usb0 Link encap:Ethernet\n          inet addr:192.168.68.1 Bcast:192.168.68.255\nwlan0: flags=8863<UP>\n\tinet 192.168.5.173 netmask 0xffffff00"
+            ),
+            expected
+        );
     }
 }

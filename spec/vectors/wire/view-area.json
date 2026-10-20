@@ -1,0 +1,12 @@
+{
+  "type": "view-area",
+  "screen": 0,
+  "area": {
+    "x": 120,
+    "y": 40,
+    "width": 1440,
+    "height": 900,
+    "canvasWidth": 1920,
+    "canvasHeight": 1080
+  }
+}

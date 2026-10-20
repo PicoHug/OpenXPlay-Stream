@@ -1,5 +1,6 @@
 {
   "type": "display-settings",
   "resolution": "native",
-  "screenWidth": 200
+  "screenWidth": 200,
+  "videoCodec": "auto"
 }

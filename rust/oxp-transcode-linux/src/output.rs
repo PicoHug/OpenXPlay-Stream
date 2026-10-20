@@ -449,7 +449,8 @@ impl OutputHost for Proxy {
 }
 fn origin(event: &ControlEvent) -> &Origin {
     match event {
-        ControlEvent::Touch { origin, .. }
+        ControlEvent::DisplaySettings { origin, .. }
+        | ControlEvent::Touch { origin, .. }
         | ControlEvent::Key { origin, .. }
         | ControlEvent::KeyFrameRequest { origin, .. }
         | ControlEvent::MicPacket { origin, .. } => origin,

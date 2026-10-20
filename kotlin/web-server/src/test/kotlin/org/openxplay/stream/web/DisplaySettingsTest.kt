@@ -56,7 +56,7 @@ class DisplaySettingsTest {
                     secondary.send(1, vector("ping").toByteArray()); assertEquals("pong", secondary.json()["type"]!!.jsonPrimitive.content)
                     output.awaitHostIdle(); assertTrue(port.changes.isEmpty())
                     primary.send(1, vector("display-settings-client").toByteArray())
-                    val expected = WebJsonCodec.parse(vector("display-settings-client"))
+                    val expected = DisplaySettings("720p", 125).message()
                     assertEquals(expected, primary.json()); assertEquals(expected, secondary.json())
                     assertEquals(listOf(DisplaySettings("720p", 125)), port.changes.toList())
                     primary.send(1, """{"type":"display-settings","resolution":"screen","screenWidth":300}""".toByteArray())
@@ -85,7 +85,7 @@ class DisplaySettingsTest {
     }
 
     @Test fun validatesNewFieldsStrictlyAndAcceptsBothSettingsDirections() {
-        for (name in listOf("display-settings-client", "display-settings-relay", "display-settings-native")) {
+        for (name in listOf("display-settings-client-codec", "display-settings-relay", "display-settings-native")) {
             for (direction in WebJsonCodec.Direction.entries) WebJsonCodec.parse(vector(name), direction)
         }
         assertEquals(WebJsonCodec.parse(vector("display-settings-native")), DisplaySettings("native").message())
@@ -98,12 +98,45 @@ class DisplaySettingsTest {
                 WebJsonCodec.validate(JsonObject(hello + ("displays" to JsonArray(listOf(JsonObject(display + (field to bad)))))))
             }
         }
-        for (field in listOf("resolution", "screenWidth")) {
+        for (field in listOf("resolution", "screenWidth", "videoCodec")) {
             val message = WebJsonCodec.parse(vector("display-settings-client"))
             assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(message + (field to JsonPrimitive("invalid")))) }
         }
         val welcome = WebJsonCodec.parse(vector("welcome-display-settings"))
         assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(welcome + ("features" to JsonPrimitive("display-settings")))) }
+    }
+    @Test fun legacyClientKeepsTheCurrentCodecAndNewClientChangesItWithoutAnotherHello() {
+        val port = Port().apply { value = DisplaySettings(videoCodec = "h265") }
+        val output = output(port); output.open(NoopHost)
+        try {
+            TestClient(Socket("127.0.0.1", output.awaitListening())).use { client ->
+                client.hello(); client.json(); client.json()
+                client.send(1, vector("display-settings-client").toByteArray())
+                assertEquals(DisplaySettings("720p", 125, "h265").message(), client.json())
+                assertEquals("h265", port.current().videoCodec)
+            }
+        } finally { output.close() }
+        val nextPort = Port()
+        val next = this.output(nextPort); next.open(NoopHost)
+        try {
+            TestClient(Socket("127.0.0.1", next.awaitListening())).use { client ->
+                client.hello(); client.json(); client.json()
+                client.send(1, vector("display-settings-client-codec").toByteArray())
+                assertEquals(DisplaySettings("720p", 125, "h265").message(), client.json())
+                assertEquals("h265", nextPort.current().videoCodec)
+            }
+        } finally { next.close() }
+    }
+    @Test fun codecIsRequiredOnlyFromTheRelayAndStrictWhenPresent() {
+        val old = WebJsonCodec.parse(vector("display-settings-client"), WebJsonCodec.Direction.CLIENT_TO_RELAY)
+        assertFailsWith<WireFormatException> { WebJsonCodec.validate(old, WebJsonCodec.Direction.RELAY_TO_CLIENT) }
+        for (codec in listOf("auto", "h265", "h264")) for (direction in WebJsonCodec.Direction.entries) {
+            val message = DisplaySettings(videoCodec = codec).message()
+            assertEquals(message, WebJsonCodec.validate(message, direction))
+        }
+        for (bad in listOf(JsonNull, JsonPrimitive("H265"), JsonPrimitive(1), JsonPrimitive(true)))
+            assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(old + ("videoCodec" to bad))) }
+        assertFailsWith<IllegalArgumentException> { DisplaySettings(videoCodec = "invalid") }
     }
     @Test fun numericScreenWidthPresetsRoundTripAndRejectInvalidValues() {
         assertEquals(200, DisplaySettings().screenWidth)

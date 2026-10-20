@@ -6,7 +6,7 @@ import { videoDecoderConfig } from './video-config';
 import { effectiveFrameRate } from './frame-rate';
 import { BinaryKind, GAP, KEYFRAME, decodeBinary, encodeBinary, encodeTouch } from '../protocol/binary';
 import { parseMessage, type Hello, type JsonMessage, type PlaybackMode, type VideoFormat, type Stats } from '../protocol/json';
-import { clockSample, dropPolicy, latencyMs, nowUs, renderQueuePolicy, videoRect } from '../shared/math';
+import { clockSample, dropPolicy, latencyMs, nowUs, renderQueuePolicy, videoRect, pictureSource } from '../shared/math';
 import { SmartDepth, paceDue, playbackMode, playbackParameters, type MediaTime } from '../shared/playback';
 import { emptyVideoHold, holdingVideo, sameVideoFormat, videoHold, type HoldEvent } from './video-hold';
 import type { AudioDebug, AudioBufferDebug, PageCommand, WorkerNotice } from './messages';
@@ -14,6 +14,8 @@ import { audioCodecs, aacConfig, type AudioDecoderInstance } from '../shared/aud
 import type { AudioFormat, MicFormat } from '../protocol/json';
 const scope = self as DedicatedWorkerGlobalScope;
 const SCREEN = 0;
+let displaySettingsSupported = false, viewAreaSupported = false;
+let viewArea: import('../protocol/json').ViewArea | undefined;
 let canvas: OffscreenCanvas, context: OffscreenCanvasRenderingContext2D | null;
 let hello: Hello, url = '', socket: WebSocket | null = null, stopped = false, visible = true;
 let restartSession: string | null = null;
@@ -243,9 +245,10 @@ function render(): void {
   if (!item) return;
   try {
     if (!context || !visible || !active || !format) { skipped++; return; }
-    const r = videoRect(canvas.width, canvas.height, format?.width ?? item.frame.displayWidth, format?.height ?? item.frame.displayHeight, fit);
+    const crop = pictureSource(item.frame.displayWidth, item.frame.displayHeight, viewArea);
+    const r = videoRect(canvas.width, canvas.height, crop.width, crop.height, fit);
     context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(item.frame, r.x, r.y, r.width, r.height);
+    context.drawImage(item.frame, crop.x, crop.y, crop.width, crop.height, r.x, r.y, r.width, r.height);
     presented = { at: now, ptsUs: item.frame.timestamp };
     const resumed = hold.deadline !== null;
     updateHold('frame');
@@ -310,9 +313,12 @@ function session(next: import('../protocol/json').SessionState): void {
 }
 function control(message: JsonMessage): void {
   switch (message.type) {
+    case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
+    case 'view-area': if (ready && viewAreaSupported) { viewArea = message; notice(message); } break;
     case 'welcome':
+      viewArea = undefined; displaySettingsSupported = message.features?.includes('display-settings') === true; viewAreaSupported = message.features?.includes('view-area') === true;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
-      notice({ type: 'welcome', sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}) });
+      notice({ features: message.features, receiverBuild: message.receiverBuild, relay: message.relay, type: 'welcome', sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}) });
       session(message.session); break;
     case 'session': session(message.session); break;
     case 'audio-format': if (ready) audioFormat(message.stream, message.format); break;
@@ -398,7 +404,7 @@ function media(data: ArrayBuffer): void {
 let sentHelloToken = '';
 function connect(): void {
   if (stopped) return;
-  ready = false;
+  ready = false; viewArea = undefined; displaySettingsSupported = false; viewAreaSupported = false; notice({ type: 'display-disconnected' });
   notice({ type: 'status', text: 'Connecting…' });
   const current = new WebSocket(url); socket = current; current.binaryType = 'arraybuffer';
   current.onopen = () => {
@@ -415,7 +421,7 @@ function connect(): void {
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
   current.onclose = event => {
     if (socket !== current) return;
-    ready = false; active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
+    ready = false; viewArea = undefined; displaySettingsSupported = false; viewAreaSupported = false; notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
     if (event?.code === 1008) {
       stopped = true; clearTimeout(holdTimer); hold = { ...hold, deadline: null, clearAt: null };
@@ -432,6 +438,8 @@ function connect(): void {
 scope.onmessage = (event: MessageEvent<PageCommand>) => {
   const message = event.data;
   switch (message.type) {
+    case 'display-settings': if (ready && displaySettingsSupported) send(message); break;
+    case 'fullscreen-exit': if (ready) send(message); break;
     case 'audio-probe':
       void (async () => {
         let aac = false;

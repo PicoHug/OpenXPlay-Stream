@@ -1,0 +1,13 @@
+{
+  "type": "welcome",
+  "version": 0,
+  "clientId": "browser-1",
+  "session": {
+    "id": "42",
+    "phase": "ACTIVE"
+  },
+  "sourceUrl": "https://github.com/OpenXPlay/OpenXPlay-Stream",
+  "attribution": "Powered by OpenXPlay.",
+  "projectUrl": "https://github.com/OpenXPlay/OpenXPlay-Stream",
+  "receiverBuild": "linux-receiver-build-20261019"
+}

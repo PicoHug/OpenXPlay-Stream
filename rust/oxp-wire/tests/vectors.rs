@@ -47,6 +47,7 @@ fn shared_vectors() {
             } else {
                 let tree: Value = serde_json::from_slice(&bytes).unwrap();
                 let stream = dir == "wire"
+                    || (tree["type"] == "display-settings" && tree.get("videoCodec").is_some())
                     || matches!(
                         tree["type"].as_str().unwrap(),
                         "restart"

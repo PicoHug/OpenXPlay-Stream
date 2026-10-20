@@ -16,7 +16,7 @@ internal fun vector(name: String): String = checkNotNull(WebJsonCodecTest::class
 
 class WebJsonCodecTest {
     @Test fun everyVectorRoundTrips() {
-        for (name in listOf("welcome-receiver-build", "display-settings-native", "hello-fullscreen-preferred", "view-area", "fullscreen-exit", "welcome-view-area", "hello-viewport", "welcome-relay", "welcome-display-settings", "display-settings-client", "display-settings-relay", "hello", "hello-auto", "hello-fps-30", "hello-fps-35", "hello-fps-40", "hello-fps-45", "hello-fps-50", "hello-fps-55", "hello-fps-60", "hello-preferences", "hello-video-codec-h264", "hello-video-codec-auto", "restart", "welcome", "session", "video-format", "audio-format", "mic", "keyframe", "pause", "ping", "pong", "stats", "stats-diagnostics", "receiver-info", "error")) {
+        for (name in listOf("welcome-receiver-build", "display-settings-native", "hello-fullscreen-preferred", "view-area", "fullscreen-exit", "welcome-view-area", "hello-viewport", "welcome-relay", "welcome-display-settings", "display-settings-client", "display-settings-client-codec", "display-settings-relay", "hello", "hello-auto", "hello-fps-30", "hello-fps-35", "hello-fps-40", "hello-fps-45", "hello-fps-50", "hello-fps-55", "hello-fps-60", "hello-preferences", "hello-video-codec-h264", "hello-video-codec-auto", "restart", "welcome", "session", "video-format", "audio-format", "mic", "keyframe", "pause", "ping", "pong", "stats", "stats-diagnostics", "receiver-info", "error")) {
             val original = Json.parseToJsonElement(vector(name))
             assertEquals(original, Json.parseToJsonElement(WebJsonCodec.encode(WebJsonCodec.parse(vector(name)))))
             val obj = original.jsonObject

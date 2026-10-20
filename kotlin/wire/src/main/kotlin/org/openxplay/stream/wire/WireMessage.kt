@@ -13,6 +13,9 @@ public enum class WireRole { PRODUCER, CONSUMER }
 public sealed interface WireMessage {
     public data class Hello(public val role: WireRole, public val name: String, public val client: String,
         public val version: Int = 0) : WireMessage
+    public data class DisplaySettings(public val resolution: String, public val screenWidth: Int,
+        public val videoCodec: String) : WireMessage
+    public data class ViewAreaMessage(public val screen: ScreenId, public val area: WireViewArea?) : WireMessage
     public data class Context(public val update: ContextUpdate) : WireMessage
     public data class Unknown(public val json: kotlinx.serialization.json.JsonObject) : WireMessage
     public data class Session(public val state: SessionState) : WireMessage
@@ -43,3 +46,6 @@ internal val unknownInputCapabilities = InputCapabilities(emptySet(), emptySet()
     false, ReconfigureCost.UNSUPPORTED)
 internal val emptyOutputCapabilities = OutputCapabilities(LatencyClass.INTERACTIVE, emptyList(), emptyMap(),
     0, emptySet(), emptySet(), false)
+
+public data class WireViewArea(public val x: Int, public val y: Int, public val width: Int,
+    public val height: Int, public val canvasWidth: Int, public val canvasHeight: Int)

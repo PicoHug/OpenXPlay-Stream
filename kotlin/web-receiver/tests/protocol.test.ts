@@ -60,7 +60,7 @@ describe('JSON contract', () => {
     const dir = webVectors;
     for (const name of readdirSync(dir).filter(name => name.endsWith('.json'))) {
       const value = JSON.parse(readFileSync(new URL(name, dir), 'utf8'));
-      const direction = ['fullscreen-exit', 'hello', 'restart', 'keyframe', 'pause', 'stats', 'receiver-info', 'ping', 'pong'].includes(value.type) ? 'client-to-relay' : 'relay-to-client';
+      const direction = name.startsWith('display-settings-client') || ['fullscreen-exit', 'hello', 'restart', 'keyframe', 'pause', 'stats', 'receiver-info', 'ping', 'pong'].includes(value.type) ? 'client-to-relay' : 'relay-to-client';
       expect(parseMessage(value, direction)).toEqual(value);
     }
   });

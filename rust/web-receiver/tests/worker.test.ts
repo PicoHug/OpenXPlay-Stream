@@ -576,3 +576,24 @@ it('forwards codec preference updates and reconnects with truthful decoders', as
   const next = Socket.instances.at(-1)!; next.open();
   expect(next.json()[0]).toEqual({ ...hello, videoCodec: 'H264' });
 });
+
+it('negotiates display settings, forwards diagnostics and crops decoded frames', async () => {
+  const context = { fillStyle: '', fillRect: vi.fn(), drawImage: vi.fn() };
+  const socket = init(context); socket.open(); await welcome(socket);
+  command(vector('display-settings-native'));
+  expect(socket.json().some((v: any) => v.type === 'display-settings')).toBe(false);
+  socket.receive(vector('welcome-features'));
+  socket.receive(vector('display-settings-native')); socket.receive(vector('view-area'));
+  expect(scope.postMessage).toHaveBeenCalledWith(vector('display-settings-native'));
+  command(vector('display-settings-native')); command(vector('display-settings-native'));
+  command(vector('fullscreen-exit'));
+  expect(socket.json().filter((v: any) => v.type === 'display-settings')).toHaveLength(2);
+  expect(socket.json()).toContainEqual(vector('fullscreen-exit'));
+  video(socket, true);
+  const frame = { displayWidth: 960, displayHeight: 540, timestamp: 1, close: vi.fn() };
+  Decoder.instances.at(-1)!.callbacks.output(frame);
+  await vi.advanceTimersByTimeAsync(40);
+  expect(context.drawImage).toHaveBeenCalledWith(frame, 60, 20, 720, 450, 16, 0, 768, 480);
+  socket.close();
+  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'display-disconnected' });
+});

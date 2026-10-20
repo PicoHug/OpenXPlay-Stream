@@ -4,7 +4,7 @@ Created by riko chen on 2026-10-14 -->
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#080808"><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23080808%22%2F%3E%3Cpath%20d%3D%22M16%2014h10l6%2010%206-10h10L37%2032l11%2018H38L32%2040l-6%2010H16l11-18Z%22%20fill%3D%22%2354E8A0%22%2F%3E%3C%2Fsvg%3E"><title>OpenXPlay</title></head>
 <body>
-<main><canvas id="video"></canvas>
+<main><canvas id="video"></canvas><div id="fullscreen-hint" role="status" data-text="fullscreenHint" hidden></div>
 <!-- Icons: Lucide (ISC); see THIRD-PARTY-LICENSES.md -->
 <div id="controls">
 <button id="gear" aria-label="Settings" aria-haspopup="dialog" aria-controls="settings"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
@@ -38,6 +38,13 @@ Created by riko chen on 2026-10-14 -->
   <path d="M3 16h3a2 2 0 0 1 2 2v3" />
   <path d="M16 21v-3a2 2 0 0 1 2-2h3" /></svg><span data-text="fullscreen"></span><span id="fullscreen-state" class="secondary"></span></button>
 <button id="reset-positions" class="row fullscreen-row" data-text="resetPositions"></button>
+<section id="display-settings" hidden>
+<div class="row"><label for="resolution" data-text="resolution"></label><select id="resolution" aria-describedby="native-hint">
+<option value="auto" data-text="automatic"></option><option value="native" data-text="native"></option><option value="1080p">1080p</option><option value="720p">720p</option><option value="screen" data-text="wholeScreen"></option></select><p id="native-hint" class="secondary" data-text="nativeHint"></p></div>
+<div class="row"><label for="screen-width" data-text="screenWidth"></label><select id="screen-width" aria-describedby="screen-width-hint"><option value="125">125 mm</option><option value="200">200 mm</option><option value="250">250 mm</option><option value="300">300 mm</option></select><p id="screen-width-hint" class="secondary" data-text="screenWidthHint"></p></div>
+<div class="row"><label for="relay-video-codec" data-text="videoCodec"></label><select id="relay-video-codec" aria-describedby="video-codec-hint"><option value="auto" data-text="codecAuto"></option><option value="h265" data-text="codecH265"></option><option value="h264" data-text="codecH264"></option></select><p id="video-codec-current" class="secondary" hidden></p><p id="video-codec-hint" class="secondary" data-text="codecHint"></p></div>
+</section>
+<label class="row"><span data-text="fullscreenRestore"></span><input id="fullscreen-restore" type="checkbox" role="switch"></label>
 <label class="row"><span data-text="frameRate"></span><select id="frame-rate">
 <option value="AUTO" data-text="automatic"></option>
 <option value="FPS_30">30 fps</option>
@@ -49,15 +56,12 @@ Created by riko chen on 2026-10-14 -->
 <option value="FPS_60">60 fps</option>
 </select></label>
 <p id="frame-rate-status" role="status" hidden data-text="applying"></p>
-<div class="row"><label for="video-codec" data-text="videoCodec"></label><select id="video-codec" aria-describedby="video-codec-hint">
-<option value="AUTO" data-text="codecAuto"></option><option value="H264" data-text="codecH264"></option>
-</select><p id="video-codec-hint" class="secondary" data-text="codecHint"></p><p id="video-codec-current" class="secondary" hidden></p></div>
 <div class="row"><label for="playback" data-text="playback"></label><select id="playback" aria-describedby="playback-hint">
 <option value="SMART" data-text="smart"></option>
 <option value="QUALITY" data-text="quality"></option>
 <option value="SPEED" data-text="speed"></option>
 </select><p id="playback-hint" class="secondary" data-text="smartHint"></p></div>
 <label class="row"><span data-text="developer"></span><input id="developer" type="checkbox" role="switch"></label>
-<section id="about"><h2 data-text="about"></h2><p><span data-text="version"></span> <span id="version"></span></p><p><a href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="powered">Powered by OpenXPlay.</a></p><a id="source" href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="source"></a></section>
+<section id="about"><h2 data-text="about"></h2><p><span data-text="version"></span> <span id="version"></span></p><p id="relay-version-row" hidden><span id="relay-name"></span> <span id="relay-version"></span></p><p><a href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="powered">Powered by OpenXPlay.</a></p><a id="source" href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="source"></a></section>
 </dialog>
 <script type="module" src="./main.ts"></script></body></html>

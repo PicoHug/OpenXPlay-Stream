@@ -19,9 +19,9 @@ it('chooses the first supported language and falls back to English', () => {
 it('persists settings and developer mode, supports debug fragment and allows switching it off', () => {
   const storage = store(), preferences = new ReceiverPreferences(() => storage);
   const values = preferences.load(new URLSearchParams());
-  expect(values).toEqual({ videoCodec: 'AUTO', frameRate: 'AUTO', playback: 'SMART', sound: true, microphone: true, fit: 'fit', developer: false, gear: { side: 'right', y: 0 } });
-  preferences.save({ videoCodec: 'AUTO', frameRate: 'AUTO', playback: 'SPEED', sound: false, microphone: false, fit: 'fill', developer: true, gear: { side: 'left', y: .3 } });
-  expect(preferences.load(new URLSearchParams())).toEqual({ videoCodec: 'AUTO', frameRate: 'AUTO', playback: 'SPEED', sound: false, microphone: false, fit: 'fill', developer: true, gear: { side: 'left', y: .3 } });
+  expect(values).toEqual({ frameRate: 'AUTO', playback: 'SMART', sound: true, microphone: true, fit: 'fit', developer: false, gear: { side: 'right', y: 0 } });
+  preferences.save({ frameRate: 'AUTO', playback: 'SPEED', sound: false, microphone: false, fit: 'fill', developer: true, gear: { side: 'left', y: .3 } });
+  expect(preferences.load(new URLSearchParams())).toEqual({ frameRate: 'AUTO', playback: 'SPEED', sound: false, microphone: false, fit: 'fill', developer: true, gear: { side: 'left', y: .3 } });
   values.developer = false; preferences.save(values);
   expect(preferences.load(new URLSearchParams()).developer).toBe(false);
   const debug = preferences.load(new URLSearchParams('debug')); expect(debug.developer).toBe(true);

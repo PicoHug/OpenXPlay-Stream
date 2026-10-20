@@ -10,7 +10,7 @@ import { version } from '../receiver/version';
 
 it('injects the package version into the same module used by About', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  expect(version).toBe(pkg.version); expect(version).not.toBe('0.0.0');
+  expect(version.split(' ')[0]).toBe(pkg.version); expect(version).not.toBe('0.0.0');
 });
 it('maps microphone lifecycle to honest status, guidance and only useful actions', () => {
   for (const state of ['idle', 'disabled', 'requesting'] as const) expect(microphoneStatus(state).label).toBe('notInUse');

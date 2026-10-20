@@ -45,6 +45,10 @@ Created by riko chen on 2026-10-14 -->
 <p class="secondary" data-text="nativeHint"></p>
 <label class="row"><span data-text="screenWidth"></span><select id="screen-width" aria-describedby="screen-width-hint"><option value="125">125 mm</option><option value="200">200 mm</option><option value="250">250 mm</option><option value="300">300 mm</option></select></label>
 <p id="screen-width-hint" class="secondary" data-text="screenWidthHint"></p>
+<div class="row"><label for="relay-video-codec" data-text="videoCodec"></label><select id="relay-video-codec" aria-describedby="video-codec-hint">
+<option value="auto" data-text="codecAuto"></option><option value="h265" data-text="codecH265"></option><option value="h264" data-text="codecH264"></option>
+</select><p id="video-codec-current" class="secondary" hidden></p></div>
+<p id="video-codec-hint" class="secondary" data-text="codecHint"></p>
 </div>
 <label class="row"><span data-text="frameRate"></span><select id="frame-rate">
 <option value="AUTO" data-text="automatic"></option>
@@ -57,9 +61,7 @@ Created by riko chen on 2026-10-14 -->
 <option value="FPS_60">60 fps</option>
 </select></label>
 <p id="frame-rate-status" role="status" hidden data-text="applying"></p>
-<div class="row"><label for="video-codec" data-text="videoCodec"></label><select id="video-codec" aria-describedby="video-codec-hint">
-<option value="AUTO" data-text="codecAuto"></option><option value="H264" data-text="codecH264"></option>
-</select><p id="video-codec-hint" class="secondary" data-text="codecHint"></p><p id="video-codec-current" class="secondary" hidden></p></div>
+
 <div class="row"><label for="playback" data-text="playback"></label><select id="playback" aria-describedby="playback-hint">
 <option value="SMART" data-text="smart"></option>
 <option value="QUALITY" data-text="quality"></option>

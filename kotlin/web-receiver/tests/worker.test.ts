@@ -574,7 +574,7 @@ it('forwards codec preference updates and reconnects with truthful decoders', as
 });
 
 it('forwards display settings only after feature negotiation and clears support on reconnect', async () => {
-  const settings = vector('display-settings-client');
+  const settings = vector('display-settings-client-codec');
   const socket = init(); socket.open(); command(settings);
   expect(socket.json().some((m: any) => m.type === 'display-settings')).toBe(false);
   socket.receive(vector('welcome')); command(settings); socket.receive(settings);

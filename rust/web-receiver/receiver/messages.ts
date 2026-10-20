@@ -11,6 +11,7 @@ export interface AudioDebug {
   stream: number; packets: number; maxArrivalGapMs: number; decoderOutputs: number; maxDecoderOutputGapMs: number;
 }
 export type PageCommand =
+  import('../protocol/json').DisplaySettings | import('../protocol/json').FullscreenExit |
   { type: 'receiver-info'; info: import('../protocol/json').ReceiverInfo } |
   { type: 'page-metrics'; metrics: Partial<Stats> } |
   { type: 'init'; canvas: OffscreenCanvas; url: string; hello: Hello; queueDepth: 0 | 1 } |
@@ -28,6 +29,8 @@ export type PageCommand =
   { type: 'fit'; fit: 'fit' | 'fill' } |
   { type: 'stop' };
 export type WorkerNotice =
+  { type: 'display-disconnected' } |
+  import('../protocol/json').DisplaySettings | import('../protocol/json').ViewArea |
   { type: 'retry'; delayMs: number; attempt: number } |
   { type: 'playing' } |
   { type: 'hold'; active: boolean } |
@@ -37,6 +40,6 @@ export type WorkerNotice =
   { type: 'audio-active'; active: boolean } |
   { type: 'mic'; stream: number; request: import('../protocol/json').MicFormat | null; token: number } |
   { type: 'status'; text: string } |
-  { type: 'welcome'; plugins?: { host: string }; sourceUrl: string; token: string } |
+  (import('../protocol/json').WelcomeDetails & { type: 'welcome'; plugins?: { host: string }; sourceUrl: string; token: string }) |
   { type: 'format'; format: VideoFormat | null } |
   { type: 'stats'; stats: Stats; skipped: number; renderQueue: number; queueDepth: number; playback: PlaybackMode; audio: AudioDebug[]; audioBuffers: AudioBufferDebug[] };

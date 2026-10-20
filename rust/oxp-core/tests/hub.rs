@@ -32,6 +32,8 @@ struct Output {
     frames: Mutex<Vec<VideoFrame>>,
     contexts: Mutex<Vec<ContextUpdate>>,
     wants_context: bool,
+    settings: Mutex<Vec<DisplaySettings>>,
+    areas: Mutex<Vec<(u32, Option<ViewArea>)>>,
 }
 impl Output {
     fn new(id: &str) -> Arc<Self> {
@@ -42,6 +44,8 @@ impl Output {
             frames: Mutex::new(Vec::new()),
             contexts: Mutex::new(Vec::new()),
             wants_context: false,
+            settings: Mutex::new(Vec::new()),
+            areas: Mutex::new(Vec::new()),
         })
     }
     fn with_context(id: &str) -> Arc<Self> {
@@ -67,6 +71,12 @@ impl Output {
     }
 }
 impl ProjectionOutput for Output {
+    fn on_display_settings(&self, settings: DisplaySettings) {
+        self.settings.lock().unwrap().push(settings);
+    }
+    fn on_view_area(&self, screen: u32, area: Option<ViewArea>) {
+        self.areas.lock().unwrap().push((screen, area));
+    }
     fn wants_context(&self) -> bool {
         self.wants_context
     }
@@ -856,5 +866,101 @@ fn main_screen_preference_survives_hub_aggregation_and_updates_negotiation() {
     caps.prefers_h264 = false;
     downstream.capabilities(caps);
     assert_eq!(hub.session_config().screens[&0].codec, VideoCodec::H265);
+    hub.close();
+}
+
+#[test]
+fn settings_and_per_screen_areas_fanout_clear_and_replay() {
+    let host = Arc::new(Host::default());
+    let hub = Hub::new(host.clone());
+    let first = Output::new("first");
+    hub.add_output(first.clone()).unwrap();
+    let settings = DisplaySettings {
+        resolution: "native".into(),
+        screen_width: 125,
+        video_codec: "h265".into(),
+    };
+    let area = ViewArea {
+        x: 10,
+        y: 20,
+        width: 100,
+        height: 200,
+        canvas_width: 800,
+        canvas_height: 600,
+    };
+    hub.display_settings(settings.clone());
+    hub.view_area(0, Some(area));
+    hub.view_area(1, Some(area));
+    hub.view_area(0, None);
+    let late = Output::new("late");
+    hub.add_output(late.clone()).unwrap();
+    assert_eq!(*first.settings.lock().unwrap(), vec![settings.clone()]);
+    assert_eq!(*late.settings.lock().unwrap(), vec![settings.clone()]);
+    assert_eq!(
+        *first.areas.lock().unwrap(),
+        vec![(0, Some(area)), (1, Some(area)), (0, None)]
+    );
+    assert_eq!(
+        *late.areas.lock().unwrap(),
+        vec![(0, None), (1, Some(area))]
+    );
+    first.control(ControlEvent::DisplaySettings {
+        settings: settings.clone(),
+        origin: first.origin(),
+    });
+    assert_eq!(
+        *host.controls.lock().unwrap(),
+        vec![ControlEvent::DisplaySettings {
+            settings,
+            origin: first.origin()
+        }]
+    );
+    hub.close();
+}
+#[test]
+fn primary_main_screen_display_wins_as_a_complete_report() {
+    let host = Arc::new(Host::default());
+    let hub = Hub::new(host.clone());
+    let buffered = Output::new("buffered");
+    let primary = Output::new("primary");
+    let secondary = Output::new("secondary");
+    for output in [&buffered, &primary, &secondary] {
+        hub.add_output(output.clone()).unwrap();
+    }
+    for (output, latency, fullscreen) in [
+        (&buffered, LatencyClass::Buffered, Some(true)),
+        (&primary, LatencyClass::Interactive, Some(false)),
+        (&secondary, LatencyClass::Interactive, Some(true)),
+    ] {
+        let d = DisplayInfo {
+            viewport: Some(Viewport {
+                width_px: 1533,
+                height_px: 907,
+            }),
+            fullscreen,
+            fullscreen_preferred: Some(true),
+            ..DisplayInfo::default()
+        };
+        output
+            .host
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .capabilities(OutputCapabilities {
+                latency,
+                displays: [(0, d)].into_iter().collect(),
+                ..OutputCapabilities::default()
+            });
+    }
+    assert_eq!(
+        host.caps.lock().unwrap().last().unwrap().displays[&0].fullscreen,
+        Some(false)
+    );
+    hub.remove_output("primary");
+    assert_eq!(
+        host.caps.lock().unwrap().last().unwrap().displays[&0].fullscreen,
+        Some(true)
+    );
     hub.close();
 }

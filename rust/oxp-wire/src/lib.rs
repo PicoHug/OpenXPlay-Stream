@@ -229,7 +229,9 @@ pub fn decode_microphone(v: &Value) -> Result<(u8, Option<MicRequest>)> {
 fn known_json_type(t: &str) -> bool {
     matches!(
         t,
-        "context"
+        "display-settings"
+            | "view-area"
+            | "context"
             | "hello"
             | "session"
             | "video-format"
@@ -472,6 +474,12 @@ fn signed(v: &Value) -> Result<i64> {
 pub fn validate_json(v: &Value) -> Result<()> {
     let t = string(&v["type"], false)?;
     match t {
+        "display-settings" => {
+            decode_display_settings(v)?;
+        }
+        "view-area" => {
+            decode_view_area(v)?;
+        }
         "context" => {
             decode_context(v)?;
         }
@@ -567,12 +575,28 @@ pub fn validate_json(v: &Value) -> Result<()> {
                 fields(
                     d,
                     &["widthPx", "heightPx", "densityDpi", "refreshHz", "safeArea"],
-                    &["frameRate", "sustainedFps"],
+                    &[
+                        "frameRate",
+                        "sustainedFps",
+                        "viewport",
+                        "fullscreen",
+                        "fullscreenPreferred",
+                    ],
                 )?;
                 for k in ["widthPx", "heightPx", "densityDpi"] {
                     require(integer(&d[k], i32::MAX as u64)? > 0, "Invalid display")?;
                 }
                 number(&d["refreshHz"], true)?;
+                if let Some(viewport) = d.get("viewport") {
+                    fields(viewport, &["widthPx", "heightPx"], &[])?;
+                    positive_int(&viewport["widthPx"])?;
+                    positive_int(&viewport["heightPx"])?;
+                }
+                for key in ["fullscreen", "fullscreenPreferred"] {
+                    if let Some(value) = d.get(key) {
+                        boolean(value)?;
+                    }
+                }
                 if let Some(rate) = d.get("frameRate") {
                     enumeration(
                         rate,
@@ -744,4 +768,53 @@ pub fn validate_json(v: &Value) -> Result<()> {
         _ => return Err("Unknown message type".into()),
     }
     Ok(())
+}
+
+pub fn decode_display_settings(v: &Value) -> Result<oxp_core::model::DisplaySettings> {
+    fields(v, &["type", "resolution", "screenWidth", "videoCodec"], &[])?;
+    enumeration(&v["type"], &["display-settings"])?;
+    let settings = oxp_core::model::DisplaySettings {
+        resolution: string(&v["resolution"], true)?.into(),
+        screen_width: positive_int(&v["screenWidth"])?,
+        video_codec: string(&v["videoCodec"], true)?.into(),
+    };
+    settings.validate()?;
+    Ok(settings)
+}
+pub fn display_settings(s: &oxp_core::model::DisplaySettings) -> Value {
+    serde_json::json!({"type":"display-settings", "resolution":s.resolution,
+        "screenWidth":s.screen_width, "videoCodec":s.video_codec})
+}
+pub fn area_value(a: oxp_core::model::ViewArea) -> Value {
+    serde_json::json!({"x":a.x,"y":a.y,"width":a.width,"height":a.height,
+        "canvasWidth":a.canvas_width,"canvasHeight":a.canvas_height})
+}
+pub fn decode_area(a: &Value) -> Result<oxp_core::model::ViewArea> {
+    fields(
+        a,
+        &["x", "y", "width", "height", "canvasWidth", "canvasHeight"],
+        &[],
+    )?;
+    let area = oxp_core::model::ViewArea {
+        x: integer(&a["x"], i32::MAX as u64)? as u32,
+        y: integer(&a["y"], i32::MAX as u64)? as u32,
+        width: positive_int(&a["width"])?,
+        height: positive_int(&a["height"])?,
+        canvas_width: positive_int(&a["canvasWidth"])?,
+        canvas_height: positive_int(&a["canvasHeight"])?,
+    };
+    area.validate()?;
+    Ok(area)
+}
+pub fn decode_view_area(v: &Value) -> Result<(u32, Option<oxp_core::model::ViewArea>)> {
+    fields(v, &["type", "screen", "area"], &[])?;
+    enumeration(&v["type"], &["view-area"])?;
+    Ok((
+        integer(&v["screen"], 255)? as u32,
+        if v["area"].is_null() {
+            None
+        } else {
+            Some(decode_area(&v["area"])?)
+        },
+    ))
 }

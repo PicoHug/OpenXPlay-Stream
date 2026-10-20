@@ -99,7 +99,7 @@ button[aria-pressed=true] { background: #54e8a0; color: #080808; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after, dialog::backdrop { animation: none !important; transition: none !important; } }
 .large-text #card h1 { justify-content: center; }
 
-#frame-rate, #playback, #video-codec { font: inherit; color: inherit; background: #202020; border: 1px solid #555; border-radius: 8px; padding: 8px; }
+#frame-rate, #playback, #resolution, #screen-width, #relay-video-codec { font: inherit; color: inherit; background: #202020; border: 1px solid #555; border-radius: 8px; padding: 8px; }
 #frame-rate-status { padding: 0 20px; }
 #playback-hint, #video-codec-hint { flex-basis: 100%; margin: 0; }
 

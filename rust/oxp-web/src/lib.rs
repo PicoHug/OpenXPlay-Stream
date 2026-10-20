@@ -41,9 +41,15 @@ pub enum Pairing {
     /// Require this nonempty code, with constant-time comparison and failed-hello rate limiting.
     Required(String),
 }
+#[derive(Clone)]
+pub struct RelayInfo {
+    pub name: String,
+    pub version: String,
+}
 pub type Diagnostics = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 #[derive(Clone)]
 pub struct WebOutputConfig {
+    pub relay: Option<RelayInfo>,
     pub diagnostics: Option<Diagnostics>,
     pub plugins: Option<PluginsConfig>,
     pub bind: SocketAddr,
@@ -66,6 +72,7 @@ pub struct WebOutputConfig {
 impl WebOutputConfig {
     pub fn new(bind: SocketAddr, static_root: PathBuf, pairing: Pairing, tls: Tls) -> Self {
         Self {
+            relay: None,
             diagnostics: None,
             plugins: None,
             bind,
@@ -230,6 +237,10 @@ struct State {
     audio_received: u64,
     audio_reported_at: Instant,
     last_restart: Option<Instant>,
+    receiver_build: Option<String>,
+    display_settings: Option<DisplaySettings>,
+    view_areas: BTreeMap<u32, Option<ViewArea>>,
+    area_canvases: BTreeMap<u32, (u32, u32)>,
 }
 struct Runtime {
     active: AtomicBool,
@@ -261,6 +272,7 @@ impl WebOutput {
             .map(plugins::Plugins::new)
             .transpose()?
             .map(Arc::new);
+        let receiver_build = receiver_build(&config.static_root);
         Ok(Self {
             plugins,
             config,
@@ -278,6 +290,10 @@ impl WebOutput {
                 audio_received: 0,
                 audio_reported_at: Instant::now(),
                 last_restart: None,
+                receiver_build,
+                display_settings: None,
+                view_areas: BTreeMap::new(),
+                area_canvases: BTreeMap::new(),
             })),
             runtime: Mutex::new(None),
             hello_rate_limit: Arc::new(Mutex::new(HelloRateLimit::default())),
@@ -303,6 +319,45 @@ impl WebOutput {
     }
 }
 impl ProjectionOutput for WebOutput {
+    fn on_display_settings(&self, settings: DisplaySettings) {
+        if settings.validate().is_err() {
+            return;
+        }
+        let mut s = self.state.lock().unwrap();
+        let first = s.display_settings.is_none();
+        s.display_settings = Some(settings.clone());
+        if first {
+            announce_features(&self.config, &mut s);
+            return;
+        }
+        for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
+            c.json(oxp_wire::display_settings(&settings));
+        }
+    }
+    fn on_view_area(&self, screen: u32, area: Option<ViewArea>) {
+        if area.is_some_and(|a| a.validate().is_err()) {
+            return;
+        }
+        let mut s = self.state.lock().unwrap();
+        let first = !s.view_areas.contains_key(&screen);
+        s.view_areas.insert(screen, area);
+        if let Some(a) = area {
+            s.area_canvases
+                .insert(screen, (a.canvas_width, a.canvas_height));
+        }
+        if screen != 0 {
+            return;
+        }
+        if first {
+            announce_features(&self.config, &mut s);
+            return;
+        }
+        if let Some(message) = page_area(&s) {
+            for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
+                c.json(message.clone());
+            }
+        }
+    }
     fn wants_context(&self) -> bool {
         self.plugins.is_some()
     }
@@ -444,6 +499,13 @@ impl ProjectionOutput for WebOutput {
         }
         for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
             c.video_format(screen, format.as_deref());
+        }
+        if screen == 0 && s.view_areas.get(&0) == Some(&None) {
+            if let Some(area) = page_area(&s) {
+                for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
+                    c.json(area.clone());
+                }
+            }
         }
     }
     fn on_video_frame(&self, frame: VideoFrame) {
@@ -1094,9 +1156,19 @@ fn handle(
             {
                 let mut s = state.lock().unwrap();
                 let session = json::session(&s.session);
+                let receiver_build = s.receiver_build.clone();
                 let formats = s.formats.clone();
                 let audio = s.audio_formats.clone();
                 let microphones = s.microphones.clone();
+                let settings = s.display_settings.clone();
+                let area = page_area(&s);
+                let mut features = Vec::new();
+                if settings.is_some() {
+                    features.push("display-settings");
+                }
+                if s.view_areas.contains_key(&0) {
+                    features.push("view-area");
+                }
                 let c = s.clients.get_mut(id).ok_or("Client closed")?;
                 let first = c.hello.is_none();
                 let mut hello = v;
@@ -1104,11 +1176,15 @@ fn handle(
                 c.set_playback(hello["playback"].as_str(), config.queue_duration_us);
                 let previous = c.hello.replace(hello);
                 if first {
-                    let mut welcome = json!({"type":"welcome","version":0,"clientId":id,"session":session,"sourceUrl":config.source_url,"attribution":"Powered by OpenXPlay.","projectUrl":json::PROJECT_URL});
-                    if config.plugins.is_some() {
-                        welcome["plugins"] = json!({"host":"/plugins/host/index.html"});
-                    }
+                    let welcome =
+                        welcome_value(config, id, session, &features, receiver_build.as_deref());
                     c.json(welcome);
+                    if let Some(settings) = settings {
+                        c.json(oxp_wire::display_settings(&settings));
+                    }
+                    if let Some(area) = area {
+                        c.json(area);
+                    }
                 }
                 for (&screen, f) in &formats {
                     let before = f.codec != VideoCodec::H265
@@ -1153,6 +1229,52 @@ fn handle(
                 }
             }
             report_caps(state);
+        }
+        "display-settings" => {
+            let allowed = {
+                let s = state.lock().unwrap();
+                s.display_settings.is_some()
+                    && s.clients
+                        .iter()
+                        .find(|(_, c)| {
+                            !c.closing
+                                && c.hello.as_ref().is_some_and(|h| {
+                                    h["displays"]
+                                        .as_array()
+                                        .unwrap()
+                                        .iter()
+                                        .any(|d| d["screen"] == 0)
+                                })
+                        })
+                        .is_some_and(|(primary, _)| primary == id)
+            };
+            if allowed {
+                if let Some(h) = host {
+                    h.control(ControlEvent::DisplaySettings {
+                        settings: {
+                            let mut complete = v.clone();
+                            if complete.get("videoCodec").is_none() {
+                                complete["videoCodec"] = json!(
+                                    state
+                                        .lock()
+                                        .unwrap()
+                                        .display_settings
+                                        .as_ref()
+                                        .unwrap()
+                                        .video_codec
+                                );
+                            }
+                            oxp_wire::decode_display_settings(&complete)?
+                        },
+                        origin,
+                    });
+                }
+            }
+        }
+        "fullscreen-exit" => {
+            if let Some(callback) = &config.diagnostics {
+                callback(id, &v);
+            }
         }
         "pause" => {
             let screen = integer(&v["screen"]) as u32;
@@ -1333,6 +1455,12 @@ fn report_caps(state: &Arc<Mutex<State>>) {
                 caps.displays
                     .entry(integer(&d["screen"]) as u32)
                     .or_insert_with(|| DisplayInfo {
+                        viewport: d.get("viewport").map(|v| Viewport {
+                            width_px: px(&v["width"]),
+                            height_px: px(&v["height"]),
+                        }),
+                        fullscreen: d["fullscreen"].as_bool(),
+                        fullscreen_preferred: d["fullscreenPreferred"].as_bool(),
                         width_px: px(&d["width"]),
                         height_px: px(&d["height"]),
                         density_dpi: (d["dpr"].as_f64().unwrap() * 160.0)
@@ -1385,6 +1513,95 @@ fn integer(v: &Value) -> u64 {
     v.as_f64().unwrap() as u64
 }
 
+fn page_area(s: &State) -> Option<Value> {
+    let area = match *s.view_areas.get(&0)? {
+        Some(area) => area,
+        None => {
+            let (width, height) = s
+                .formats
+                .get(&0)
+                .map(|f| (f.width, f.height))
+                .or_else(|| s.area_canvases.get(&0).copied())?;
+            ViewArea {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                canvas_width: width,
+                canvas_height: height,
+            }
+        }
+    };
+    let mut value = oxp_wire::area_value(area);
+    value["type"] = json!("view-area");
+    Some(value)
+}
+fn receiver_build(root: &std::path::Path) -> Option<String> {
+    let mut file = std::fs::File::open(root.join("receiver-build.txt")).ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?.trim();
+    (!text.is_empty() && text.len() <= 128 && !text.chars().any(char::is_control))
+        .then(|| text.into())
+}
+
+fn welcome_value(
+    config: &WebOutputConfig,
+    id: &str,
+    session: Value,
+    features: &[&str],
+    receiver_build: Option<&str>,
+) -> Value {
+    let mut value = json!({"type":"welcome","version":0,"clientId":id,"session":session,
+        "sourceUrl":config.source_url,"attribution":"Powered by OpenXPlay.","projectUrl":json::PROJECT_URL});
+    if !features.is_empty() {
+        value["features"] = json!(features);
+    }
+    if config.plugins.is_some() {
+        value["plugins"] = json!({"host":"/plugins/host/index.html"});
+    }
+    if let Some(build) = receiver_build {
+        value["receiverBuild"] = json!(build);
+    }
+    if let Some(relay) = &config.relay {
+        value["relay"] = json!({"name":relay.name,"version":relay.version});
+    }
+    value
+}
+// Inputs may announce support after a browser connects. Publish a fresh welcome and snapshot.
+fn announce_features(config: &WebOutputConfig, s: &mut State) {
+    let mut features = Vec::new();
+    if s.display_settings.is_some() {
+        features.push("display-settings");
+    }
+    if s.view_areas.contains_key(&0) {
+        features.push("view-area");
+    }
+    let settings = s.display_settings.as_ref().map(oxp_wire::display_settings);
+    let area = page_area(s);
+    let session = json::session(&s.session);
+    for (id, c) in s.clients.iter_mut().filter(|(_, c)| c.hello.is_some()) {
+        c.json(welcome_value(
+            config,
+            id,
+            session.clone(),
+            &features,
+            s.receiver_build.as_deref(),
+        ));
+        if let Some(settings) = &settings {
+            c.json(settings.clone());
+        }
+        if let Some(area) = &area {
+            c.json(area.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -66,6 +66,8 @@ public class WireInput(
                             sink.audioFormat(message.stream, message.format)
                         }
                         is WireMessage.Microphone -> sink.microphone(message.stream, message.request)
+                        // The Kotlin hub has no display-settings or view-area routing; Android passes them in-process.
+                        is WireMessage.DisplaySettings, is WireMessage.ViewAreaMessage -> Unit
                         is WireMessage.Binary -> {
                             val b = message.value; val state = session
                             when (b.header.kind) {

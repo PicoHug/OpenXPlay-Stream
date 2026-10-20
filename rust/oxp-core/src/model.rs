@@ -139,6 +139,10 @@ impl TouchContact {
 /// Touch events contain the complete contact set; omitted contacts are released.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlEvent {
+    DisplaySettings {
+        settings: DisplaySettings,
+        origin: Origin,
+    },
     Touch {
         screen: u32,
         contacts: Vec<TouchContact>,
@@ -244,6 +248,9 @@ impl FrameRatePolicy {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayInfo {
+    pub viewport: Option<Viewport>,
+    pub fullscreen: Option<bool>,
+    pub fullscreen_preferred: Option<bool>,
     pub width_px: u32,
     pub height_px: u32,
     pub density_dpi: u32,
@@ -255,6 +262,9 @@ pub struct DisplayInfo {
 impl Default for DisplayInfo {
     fn default() -> Self {
         Self {
+            viewport: None,
+            fullscreen: None,
+            fullscreen_preferred: None,
             width_px: 1280,
             height_px: 720,
             density_dpi: 160,
@@ -389,6 +399,48 @@ impl Default for InputCapabilities {
             key_frame_requests: true,
             reconfigure: ReconfigureCost::Unsupported,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Viewport {
+    pub width_px: u32,
+    pub height_px: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplaySettings {
+    pub resolution: String,
+    pub screen_width: u32,
+    pub video_codec: String,
+}
+impl DisplaySettings {
+    pub fn validate(&self) -> Result<()> {
+        require(
+            ["auto", "native", "1080p", "720p", "screen"].contains(&self.resolution.as_str())
+                && [125, 200, 250, 300].contains(&self.screen_width)
+                && ["auto", "h265", "h264"].contains(&self.video_codec.as_str()),
+            "Invalid display settings",
+        )
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewArea {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+}
+impl ViewArea {
+    pub fn validate(&self) -> Result<()> {
+        require(
+            self.width > 0
+                && self.height > 0
+                && u64::from(self.x) + u64::from(self.width) <= u64::from(self.canvas_width)
+                && u64::from(self.y) + u64::from(self.height) <= u64::from(self.canvas_height),
+            "Invalid view area",
+        )
     }
 }
 

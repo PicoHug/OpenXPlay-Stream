@@ -321,7 +321,7 @@ function control(message: JsonMessage): void {
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
       notice({ type: 'welcome', receiverBuild: message.receiverBuild, features: message.features, sourceUrl: message.sourceUrl, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
       session(message.session); break;
-    case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
+    case 'display-settings': if (ready && displaySettingsSupported && message.videoCodec) notice({ ...message, videoCodec: message.videoCodec }); break;
     case 'view-area': if (ready && viewAreaSupported) { viewArea = message; notice({ type: 'view-area', area: viewArea }); } break;
     case 'session': session(message.session); break;
     case 'audio-format': if (ready) audioFormat(message.stream, message.format); break;

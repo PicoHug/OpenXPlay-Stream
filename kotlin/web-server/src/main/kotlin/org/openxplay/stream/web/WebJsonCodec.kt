@@ -31,6 +31,7 @@ public object WebJsonCodec {
             Direction.RELAY_TO_CLIENT -> setOf("view-area", "display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
             null -> schemas.keys
         }
+        if (type == "display-settings" && direction == Direction.RELAY_TO_CLIENT && "videoCodec" !in obj) throw WireFormatException("Missing video codec")
         if (type !in allowed) throw WireFormatException("Wrong message direction")
         return obj
     }
@@ -122,7 +123,7 @@ public object WebJsonCodec {
                 it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
         message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display, "autoRestore" to optional(literal("restored", "denied", "off"))),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
-        message("display-settings", "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),
+        message("display-settings", "videoCodec" to optional(literal("auto", "h265", "h264")), "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),
         message("restart"),
         message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),

@@ -122,8 +122,10 @@ button[aria-pressed=true] { background: #54e8a0; color: #080808; }
 .large-text #card[data-state=code], .large-text #card[data-state=incorrect] { display: block; text-align: center; }
 .large-text #card h1 { justify-content: center; }
 
-#frame-rate, #playback, #video-codec { font: inherit; color: inherit; background: #202020; border: 1px solid #555; border-radius: 8px; padding: 8px; }
+#settings select { font: inherit; color: inherit; background: #202020; border: 1px solid #555; border-radius: 8px; padding: 8px; }
 #frame-rate-status { padding: 0 20px; }
-#playback-hint, #video-codec-hint { flex-basis: 100%; margin: 0; }
+#playback-hint, #video-codec-hint, #native-hint, #screen-width-hint, #video-codec-current { flex-basis: 100%; margin: 0; }
 
 .plugins-host { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; z-index: 1; }
+
+#fullscreen-hint { position: fixed; inset: 40% 10% auto; text-align: center; padding: 20px; border-radius: 12px; background: #101010dd; color: white; pointer-events: none; z-index: 3; }

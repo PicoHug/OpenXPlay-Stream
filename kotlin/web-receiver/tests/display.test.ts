@@ -37,14 +37,14 @@ it('requires a welcome feature and clears it on legacy welcome or disconnect', (
   expect(gate.supported).toBe(false); expect(gate.message('auto', 125)).toBeUndefined();
   gate.welcome(['unrelated']); expect(gate.message('auto', 125)).toBeUndefined();
   gate.welcome(['display-settings']);
-  expect(gate.message('720p', 125)).toEqual(vector('display-settings-client'));
+  expect(gate.message('720p', 125, 'h265')).toEqual(vector('display-settings-client-codec'));
   expect(gate.message('native', 200)).toEqual(vector('display-settings-native'));
   gate.welcome(); expect(gate.supported).toBe(false);
 });
 it('accepts the exact vectors and rejects malformed viewport, feature and setting fields', () => {
   parseMessage(vector('hello-viewport'), 'client-to-relay');
   parseMessage(vector('welcome-display-settings'), 'relay-to-client');
-  for (const name of ['display-settings-client', 'display-settings-relay', 'display-settings-native'])
+  for (const name of ['display-settings-client-codec', 'display-settings-relay', 'display-settings-native'])
     for (const direction of ['client-to-relay', 'relay-to-client'] as const) expect(parseMessage(vector(name), direction)).toEqual(vector(name));
   for (const viewport of [{ width: 0, height: 1 }, { width: 1.5, height: 2 }, { width: 1 }, null, { width: 1, height: 2, extra: 0 }])
     expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, viewport }] })).toThrow();
@@ -58,14 +58,14 @@ it('accepts the exact vectors and rejects malformed viewport, feature and settin
 it('provides hidden settings rows, bilingual labels and canvas/window ratios', () => {
   const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
   expect(html).toContain('id="display-settings" hidden');
-  const options = [...html.matchAll(/<option value="(auto|native|1080p|720p|screen)"/g)].map(match => match[1]);
+  const options = [...html.matchAll(/<option value="(auto|native|1080p|720p|screen)" data-text="(?:automatic|native|wholeScreen)"|<option value="(1080p|720p)"/g)].map(match => match[1] ?? match[2]);
   expect(options).toEqual(['auto', 'native', '1080p', '720p', 'screen']);
   expect(html).toContain('value="native" data-text="native"');
   expect(html).toContain('data-text="nativeHint"');
   expect(strings.en.native).toBe('Native'); expect(strings['zh-CN'].native).toBe('原画');
   expect(strings.en.nativeHint).toContain('sharpest'); expect(strings.en.nativeHint).toContain('Wi-Fi bandwidth');
   expect(strings['zh-CN'].nativeHint).toContain('最清晰'); expect(strings['zh-CN'].nativeHint).toContain('Wi-Fi 带宽');
-  for (const id of ['resolution', 'screen-width', 'picture-size']) expect(html).toContain('id="' + id + '"');
+  for (const id of ['resolution', 'screen-width', 'picture-size', 'relay-video-codec', 'video-codec-current']) expect(html).toContain('id="' + id + '"');
   const widths = [...html.matchAll(/<option value="(125|200|250|300)"/g)].map(match => Number(match[1]));
   expect(widths).toEqual([125, 200, 250, 300]);
   expect(html).toContain('data-text="screenWidthHint"');
@@ -99,10 +99,24 @@ it('accepts optional boolean fullscreen preference and rejects other types', () 
 it('accepts every numeric screen width in both directions and rejects missing or invalid presets', () => {
   for (const direction of ['client-to-relay', 'relay-to-client'] as const) {
     for (const screenWidth of [125, 200, 250, 300]) {
-      const message = { ...vector('display-settings-client'), screenWidth };
+      const message = { ...vector('display-settings-relay'), screenWidth };
       expect(parseMessage(message, direction)).toEqual(message);
     }
     for (const screenWidth of [undefined, 100, 400, 200.5, '125', null, true])
       expect(() => parseMessage({ ...vector('display-settings-client'), screenWidth }, direction)).toThrow();
   }
+});
+
+it('requires codec in relay settings, accepts old clients and validates every codec', () => {
+  const legacy = vector('display-settings-client');
+  expect(parseMessage(legacy, 'client-to-relay')).toEqual(legacy);
+  expect(() => parseMessage(legacy, 'relay-to-client')).toThrow();
+  for (const videoCodec of ['auto', 'h265', 'h264'])
+    for (const direction of ['client-to-relay', 'relay-to-client'] as const)
+      expect(parseMessage({ ...legacy, videoCodec }, direction)).toEqual({ ...legacy, videoCodec });
+  for (const videoCodec of [null, 'AUTO', 'H265', 1, true])
+    expect(() => parseMessage({ ...legacy, videoCodec })).toThrow();
+  const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
+  expect(html).not.toContain('id="video-codec"');
+  expect(html.slice(html.indexOf('id="display-settings"'), html.indexOf('id="frame-rate"'))).toContain('id="relay-video-codec"');
 });

@@ -33,10 +33,11 @@ export interface Stats {
   type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
-export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300 }
+export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264' }
+export type ClientDisplaySettings = Omit<DisplaySettings, 'videoCodec'> & { videoCodec?: DisplaySettings['videoCodec'] };
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
-export type JsonMessage = ViewArea | FullscreenExit | DisplaySettings | Hello | { type: 'restart' } |
+export type JsonMessage = ViewArea | FullscreenExit | ClientDisplaySettings | Hello | { type: 'restart' } |
   { type: 'welcome'; receiverBuild?: string; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
@@ -103,7 +104,7 @@ const schemas: Record<string, Validator> = {
       const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight;
     })(),
   'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
-  'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
+  'display-settings': object({ type: literal('display-settings'), videoCodec: optional(literal('auto', 'h265', 'h264')), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
@@ -131,6 +132,7 @@ export function parseMessage(input: string | unknown, direction?: Direction): Js
   check(typeof x === 'object' && x !== null, 'Expected JSON object');
   const type = (x as { type?: unknown }).type;
   check(typeof type === 'string' && Object.hasOwn(schemas, type) && schemas[type](x), 'Invalid JSON message');
+  if (type === 'display-settings' && direction === 'relay-to-client') check(literal('auto', 'h265', 'h264')((x as DisplaySettings).videoCodec), 'Missing video codec');
   if (direction) check((direction === 'client-to-relay' ? clientTypes : relayTypes).includes(type), 'Wrong message direction');
   return x as JsonMessage;
 }

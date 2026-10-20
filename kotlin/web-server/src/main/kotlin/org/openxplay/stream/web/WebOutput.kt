@@ -19,6 +19,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import kotlinx.serialization.json.*
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.wire.*
@@ -85,6 +86,14 @@ private const val HOST_QUEUE_CAPACITY = 256
 
 /** Socket I/O runs on owned threads. Model callbacks only retain state and enqueue borrowed frames. */
 public class WebOutput(private val config: WebOutputConfig, override val id: String = "web") : ProjectionOutput {
+    @Volatile private var tlsContext = config.sslContext
+
+    /** Existing connections retain their TLS session; new connections use this context. */
+    public fun updateTls(sslContext: SSLContext) {
+        check(config.sslContext != null) { "Output was configured without TLS" }
+        tlsContext = sslContext
+    }
+
     private val receiverBuild = readReceiverBuild(config.staticAssetRoot)
     private val plugins = config.plugins?.let(::Plugins)
     override fun wantsContext(): Boolean = plugins != null
@@ -318,7 +327,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
 
         fun accept() {
             try {
-                val listener = config.sslContext?.serverSocketFactory?.createServerSocket() ?: ServerSocket()
+                val listener = ServerSocket()
                 server = listener
                 listener.reuseAddress = true
                 listener.bind(InetSocketAddress(config.bindAddress, config.port))
@@ -338,13 +347,27 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             finally { try { server?.close() } catch (_: Exception) { } }
         }
 
-        private fun connection(socket: Socket) {
+        private fun connection(accepted: Socket) {
+            var socket = accepted
             var upgraded = false
             var mediaReserved = false
             var client: Client? = null
             try {
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                tlsContext?.let { context ->
+                    val secured = context.socketFactory.createSocket(accepted, null, accepted.port, true) as SSLSocket
+                    socket = secured
+                    synchronized(lock) {
+                        sockets.remove(accepted)
+                        if (!active) return
+                        sockets.add(secured)
+                    }
+                    secured.useClientMode = false
+                    secured.soTimeout = 5000
+                    secured.startHandshake()
+                }
                 val input = DeadlineInput(socket, socket.getInputStream())
-                input.deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                input.deadline = deadline
                 val request = readHttp(input)
                 // With plugins off, /plugins/ paths take the ordinary route, exactly as before plugins existed.
                 if (plugins != null && request.target.substringBefore('?').startsWith("/plugins/")) {
@@ -576,8 +599,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     val now = System.nanoTime()
                     if (primary === this && (run.lastRestartNanos == null || now - run.lastRestartNanos!! >= TimeUnit.SECONDS.toNanos(10))) {
                         run.lastRestartNanos = now
-                        val settings = DisplaySettings(message.getValue("resolution").jsonPrimitive.content, message.getValue("screenWidth").jsonPrimitive.int)
-                        run.host { port.set(settings, origin) }
+                        run.host { port.set(DisplaySettings(message.getValue("resolution").jsonPrimitive.content,
+                            message.getValue("screenWidth").jsonPrimitive.int, message["videoCodec"]?.jsonPrimitive?.content ?: port.current().videoCodec), origin) }
                     }
                 }
                 "restart" -> synchronized(lock) {

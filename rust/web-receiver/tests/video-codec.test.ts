@@ -9,13 +9,13 @@ import { ReceiverPreferences, strings } from '../receiver/ui';
 import { parseMessage, type Hello } from '../protocol/json';
 
 const hello = JSON.parse(readFileSync(new URL('../spec/vectors/web/hello-video-codec-h264.json', import.meta.url), 'utf8')) as Hello;
-it('persists the preference and keeps decoder reports truthful when changing hello', () => {
+it('ignores the old stored browser preference while retaining legacy codec validation', () => {
   const values = new Map<string, string>();
   const storage = new ReceiverPreferences(() => ({ getItem: k => values.get(k) ?? null, setItem: (k, v) => { values.set(k, v); }, removeItem: k => { values.delete(k); } }));
   const prefs = storage.load(new URLSearchParams());
   expect(prefs.videoCodec).toBe('AUTO');
   prefs.videoCodec = 'H264'; storage.save(prefs);
-  expect(storage.load(new URLSearchParams()).videoCodec).toBe('H264');
+  expect(storage.load(new URLSearchParams()).videoCodec).toBe('AUTO');
   const forced = withVideoCodec(hello, 'H264');
   expect(forced.decoders).toBe(hello.decoders);
   expect(parseMessage(forced)).toEqual(forced);

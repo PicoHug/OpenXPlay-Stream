@@ -33,6 +33,8 @@ struct ContextDelivery {
 }
 struct State {
     input: InputCapabilities,
+    display_settings: Option<DisplaySettings>,
+    view_areas: BTreeMap<u32, Option<ViewArea>>,
     context: BTreeMap<crate::ContextTopic, crate::ContextUpdate>,
     outputs: Vec<Arc<Destination>>,
     caps: BTreeMap<String, OutputCapabilities>,
@@ -64,6 +66,8 @@ impl Hub {
             weak: weak.clone(),
             state: Mutex::new(State {
                 input: InputCapabilities::default(),
+                display_settings: None,
+                view_areas: BTreeMap::new(),
                 context: crate::ContextUpdate::idle()
                     .into_iter()
                     .map(|u| (u.topic(), u))
@@ -214,6 +218,12 @@ impl Hub {
                     context.wake.notify_one();
                 });
             }
+            if let Some(settings) = s.display_settings.clone() {
+                self.deliver(&d, move |o| o.on_display_settings(settings));
+            }
+            for (&screen, &area) in &s.view_areas {
+                self.deliver(&d, move |o| o.on_view_area(screen, area));
+            }
             if let Some(state) = s.session.clone() {
                 let config = derive(&s);
                 self.deliver(&d, move |o| o.on_session(&state, &config));
@@ -358,10 +368,11 @@ impl Hub {
             c.microphone |= v.microphone;
             c.prefers_h264 |= v.displays.contains_key(&0) && v.prefers_h264;
         }
-        // The primary interactive display wins even when a buffered output was attached first.
+        // Attachment order deterministically selects the first interactive main-screen report.
+        // Its complete display (including unknown viewport/fullscreen values) wins.
         if let Some(primary) = caps
             .iter()
-            .find(|c| c.latency == LatencyClass::Interactive && !c.displays.is_empty())
+            .find(|c| c.latency == LatencyClass::Interactive && c.displays.contains_key(&0))
         {
             for (&screen, d) in &primary.displays {
                 c.displays.insert(screen, d.clone());
@@ -380,6 +391,11 @@ impl Hub {
                 return;
             }
             match &e {
+                ControlEvent::DisplaySettings { settings, .. } => {
+                    if settings.validate().is_ok() {
+                        self.forward(e);
+                    }
+                }
                 ControlEvent::KeyFrameRequest { .. } => {
                     if !s.input.key_frame_requests {
                         return;
@@ -529,7 +545,8 @@ fn close_destination(d: &Destination) {
 }
 fn origin(e: &ControlEvent) -> &Origin {
     match e {
-        ControlEvent::Touch { origin, .. }
+        ControlEvent::DisplaySettings { origin, .. }
+        | ControlEvent::Touch { origin, .. }
         | ControlEvent::Key { origin, .. }
         | ControlEvent::KeyFrameRequest { origin, .. }
         | ControlEvent::MicPacket { origin, .. } => origin,
@@ -653,6 +670,39 @@ impl OutputHost for Host {
     }
 }
 impl InputSink for Hub {
+    fn display_settings(&self, settings: DisplaySettings) {
+        if settings.validate().is_err() {
+            return;
+        }
+        {
+            let mut s = self.state.lock().unwrap();
+            if s.closed {
+                return;
+            }
+            s.display_settings = Some(settings.clone());
+            for d in &s.outputs {
+                let settings = settings.clone();
+                self.deliver(d, move |o| o.on_display_settings(settings));
+            }
+        }
+        self.drain();
+    }
+    fn view_area(&self, screen: u32, area: Option<ViewArea>) {
+        if screen > 255 || area.is_some_and(|a| a.validate().is_err()) {
+            return;
+        }
+        {
+            let mut s = self.state.lock().unwrap();
+            if s.closed {
+                return;
+            }
+            s.view_areas.insert(screen, area);
+            for d in &s.outputs {
+                self.deliver(d, move |o| o.on_view_area(screen, area));
+            }
+        }
+        self.drain();
+    }
     fn context(&self, update: crate::ContextUpdate) {
         let mut s = self.state.lock().unwrap();
         if s.closed {
