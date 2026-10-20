@@ -438,7 +438,12 @@ public class ClinkSession(
                         val f = Fields.decode(body)
                         val code = f.number(2); val action = f.number(1)
                         require(code <= 65535uL && action <= 2uL && f.number(3) <= 0xffffffffuL)
-                        UibcDecoder.key(code.toInt(), action.toInt(), Origin(outputId, headUnitId))?.let(onControl)
+                        val mapped = UibcDecoder.key(code.toInt(), action.toInt(), Origin(outputId, headUnitId))
+                        // 车机的方向盘/中控按键到这里了；把原始 code 记下来，
+                        // 这样遇到用非标准键值的车型时可以照着映射，不用猜。
+                        listener.diagnostic("control key code=${code.toInt()} action=${action.toInt()} " +
+                            "mapped=${mapped?.code ?: "none"} down=${mapped?.down}")
+                        mapped?.let(onControl)
                     }
                 }
             }
