@@ -85,10 +85,10 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
                 if (profiles and profile != 0 && levels and bit != 0) {
                     supported += DecoderSupport("avc1.${if (profile == 1) "42E0" else "6400"}${"%02X".format(level)}", true)
                     if (selected == null) {
-                        // H.265 claims Main Level 4.1, which covers 1920x1080p30 (2,073,600 samples);
-                        // 1080p60 would need Level 5.1. The head unit scales the stream onto its screen.
-                        // H.264 keeps 720p30, the size the head units are known to accept.
-                        val wanted = if (hevcEnabled) listOf(Triple(1920, 1080, 30), Triple(1280, 720, 30))
+                        // H.265 claims Main Level 5.1, which covers 1920x1080p60 (2,073,600 samples at
+                        // 60 fps). The head unit scales the stream onto its screen. H.264 keeps 720p30,
+                        // the size the head units are known to accept.
+                        val wanted = if (hevcEnabled) listOf(Triple(1920, 1080, 60), Triple(1920, 1080, 30), Triple(1280, 720, 30))
                             else listOf(Triple(1280, 720, 30))
                         val timing = wanted.firstNotNullOfOrNull { size ->
                             timings.firstOrNull { it.first == size && cea and (1L shl it.second) != 0L }
@@ -98,10 +98,12 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
                 }
             }
         }
-        // The flag names no level; claim Main 4.1 so the iPhone's 720p60 H.265 passes through untouched.
+        // The flag names no level; claim Main 5.1 so the iPhone's 1080p60 H.265 passes through untouched.
+        // 1080p30 fits Level 4.1, so the lower mode keeps the smaller claim.
         if (hevcEnabled) {
             supported.clear()
-            supported += DecoderSupport("hvc1.1.6.L123.B0", true)
+            val level = if ((selected?.fps ?: 0) >= 60) 153 else 123
+            supported += DecoderSupport("hvc1.1.6.L$level.B0", true)
         }
         mode = checkNotNull(selected) { "projection_timing_mismatch" }; decoders = supported.distinct()
         peer["wfd_client_rtp_ports"]?.let {

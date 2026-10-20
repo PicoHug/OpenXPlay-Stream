@@ -70,13 +70,13 @@ class SessionPartsTest {
             val (source, m4) = negotiate(mode, flag)
             val enabled = mode != ClinkHevcMode.OFF && flag == "supported"
             assertEquals(enabled, source.hevcEnabled)
-            if (enabled) assertEquals(listOf(org.openxplay.stream.core.DecoderSupport("hvc1.1.6.L123.B0", true)), source.decoders)
+            if (enabled) assertEquals(listOf(org.openxplay.stream.core.DecoderSupport("hvc1.1.6.L153.B0", true)), source.decoders)
             else assertTrue(source.decoders.isNotEmpty() && source.decoders.all { it.codecString.startsWith("avc1.") })
             // H.265 claims Main Level 4.1, which covers 1080p30, so the mode moves up; H.264 keeps 720p30.
             val expected = if (enabled) {
-                assertEquals(WfdMode(1920, 1080, 30, 7, 1, 1), source.mode)
-                baseline.replace("display=1280:720;dpi=160;fps=30", "display=1920:1080;dpi=160;fps=30")
-                    .replace("28 00 01 01 00000020", "38 00 01 01 00000080")
+                assertEquals(WfdMode(1920, 1080, 60, 8, 1, 1), source.mode)
+                baseline.replace("display=1280:720;dpi=160;fps=30", "display=1920:1080;dpi=160;fps=60")
+                    .replace("28 00 01 01 00000020", "40 00 01 01 00000100")
             } else {
                 assertEquals(WfdMode(1280, 720, 30, 5, 1, 1), source.mode)
                 baseline
@@ -89,7 +89,7 @@ class SessionPartsTest {
         val source = WfdSource("127.0.0.1", ClinkPorts())
         val get = source.handle(response(source.start())).single()
         val m4 = source.handle(response(get, fixture() + "\r\niccoa_support_hevc: supported\r\n")).single()
-        assertEquals(listOf("hvc1.1.6.L123.B0"), source.decoders.map { it.codecString })
+        assertEquals(listOf("hvc1.1.6.L153.B0"), source.decoders.map { it.codecString })
         assertFalse(m4.body.contains("iccoa_support_hevc"))
     }
     @Test fun `HEVC placeholder matches AVC playback and has no AUD`() {
@@ -113,10 +113,10 @@ class SessionPartsTest {
             assertEquals(avc.fps, clip.fps)
             assertTrue(org.openxplay.stream.core.codec.Nal.isKeyFrame(avc.frames.first(), VideoCodec.H264))
             assertTrue(org.openxplay.stream.core.codec.Nal.isKeyFrame(clip.frames.first(), VideoCodec.H265))
-            // 1080p needs Main Level 4.1; the 720p bundle keeps level 3.1.
+            // 1080p needs Main Level 5.1; the 720p bundle keeps level 3.1.
             val config = org.openxplay.stream.core.codec.HevcConfig.parse(clip.format.config)
             assertEquals(1, config.profile)
-            assertEquals(if (size.first >= 1920) 123 else 93, config.level)
+            assertEquals(if (size.first >= 1920) 153 else 93, config.level)
         }
     }
     @Test fun `HEVC placeholder TS decodes all thirty frames`() {

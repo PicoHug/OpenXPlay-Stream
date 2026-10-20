@@ -70,8 +70,8 @@ public class BundledHevcPlaceholderVideo(width: Int = 1280, height: Int = 720) :
         val bytes = checkNotNull(javaClass.getResourceAsStream("/placeholder-${width}x${height}.h265")) {
             "missing_hevc_placeholder"
         }.use { it.readBytes() }
-        // Main profile, level 4.1 (general_level_idc 123) for 1080p; the 720p bundle stays at level 3.1 (93).
-        val levelIdc = if (width >= 1920) 123 else 93
+        // Main profile, level 5.1 (general_level_idc 153) for 1080p; the 720p bundle stays at level 3.1 (93).
+        val levelIdc = if (width >= 1920) 153 else 93
         val units = Nal.units(bytes, Nal.Format.ANNEX_B).toList()
         fun type(nal: ByteArray): Int = (nal[0].toInt() ushr 1) and 63
         val config = ByteArrayOutputStream().also { buffer ->
