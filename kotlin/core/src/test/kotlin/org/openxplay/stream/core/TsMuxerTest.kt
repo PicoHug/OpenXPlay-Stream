@@ -19,6 +19,46 @@ import kotlin.test.assertTrue
 class TsMuxerTest {
     private val config = AvcConfig.parse(vector("avc-baseline-640x480"))
 
+    @Test fun avcBytesMatchPreHevcMuxer() {
+        // Captured from the pre-HEVC muxer for the same frames, gaps, keyframes and AAC packets.
+        val golden = listOf("3ecff05fe0d5fb49b7d30fe9a99b2fe460f82e5521e91efb51cc5d954fff8334",
+            "099d56261755fc89412d8b131f75e00a3aa620aad98249a78ff3cc7888de66ff",
+            "dca9ccef09f333f3617fb96491777bcbfd37ec71b0b2bf46bccfbde70eed1ac4",
+            "b6f87fe763dac4d774025a8268c96b51bbf0060bb5cf038a12d118755a9ab00c")
+        var index = 0
+        for (aud in listOf(false, true)) for (audio in listOf(false, true)) {
+            val actual = java.io.ByteArrayOutputStream()
+            val mux = TsMuxer({ actual.write(it) }, insertAud = aud, audioEnabled = audio)
+            repeat(35) { index ->
+                val key = index % 12 == 0
+                mux.writeVideo(frame(500, if (key) 5 else 1), config, index * 100_000L, key)
+                if (audio) mux.writeAudio(adts(), index * 100_000L)
+            }
+            val hash = java.security.MessageDigest.getInstance("SHA-256").digest(actual.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            assertEquals(golden[index++], hash)
+        }
+    }
+
+    @Test fun hevcPmtAndEveryIrapStartsWithParameterSetsWithoutAud() {
+        val config = org.openxplay.stream.core.codec.HevcConfig.parse(vector("hevc-main-1920x1080"))
+        val packets = mutableListOf<ByteArray>()
+        val muxer = TsMuxer({ packets += it.copyOf() }, videoCodec = VideoCodec.H265, pmtVersion = 7)
+        fun nal(type: Int) = byteArrayOf(0, 0, 0, 3, (type shl 1).toByte(), 1, 0x80.toByte())
+        for (type in 16..21) muxer.writeVideo(nal(35) + nal(39) + nal(type) + nal(40), config, (type - 16) * 33_333L, false)
+        val pmt = section(packets.first { pid(it) == 0x100 })
+        assertEquals(0x24, u8(pmt[12])); assertEquals(7, (u8(pmt[5]) ushr 1) and 31)
+        assertEquals(0L, independentCrc(pmt))
+        for ((index, pes) in pesPackets(packets, 0x101).withIndex()) {
+            assertEquals(0xe0, u8(pes[3]))
+            val units = Nal.units(pes.copyOfRange(14, pes.size), Nal.Format.ANNEX_B).toList()
+            assertEquals(listOf(32, 33, 34, 16 + index, 40), units.map { (u8(it[0]) ushr 1) and 63 })
+            (config.vps + config.sps + config.pps).zip(units).forEach { (a, b) -> assertContentEquals(a, b) }
+        }
+        assertEquals(6, packets.count { pid(it) == 0 })
+        assertTrue(packets.filter(::hasPcr).map { pcr(it).first }.zipWithNext().all { (a, b) -> b - a <= 40_000 * 27 })
+    }
+
     @Test
     fun packetSizesSyncStuffingAndBorrowedBuffer() {
         val packets = mutableListOf<ByteArray>()

@@ -39,6 +39,10 @@ class ClinkTraceTest {
             hub.start(); hub.addOutput(output)
             peer.await("media trace") { events.filterIsInstance<ClinkTraceEvent.Media>().any { it.rtpPackets > 0 } }
             peer.requestKeyframe()
+            peer.screenNotice(5)
+            peer.await("screen notice requests a key frame") {
+                events.any { it is ClinkTraceEvent.Video && it.event == "keyframe_request" && it.source == "head_unit_m5" }
+            }
             peer.touch(0, listOf(PixelContact(1, 640, 360)))
             peer.await("input trace") { events.any { it is ClinkTraceEvent.Input } }
             peer.await("sensor connected") { peer.sensorConnected }

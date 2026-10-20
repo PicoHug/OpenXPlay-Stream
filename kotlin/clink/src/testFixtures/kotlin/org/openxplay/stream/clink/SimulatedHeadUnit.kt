@@ -244,6 +244,9 @@ public class SimulatedHeadUnit(
     /** Sends complete wire bytes for framing and encryption fault tests. */
     public fun sensorBytes(bytes: ByteArray): Unit = write(checkNotNull(sensor), bytes)
     public fun closeSensor(): Unit { sensor?.close() }
+    /** The car's screen notices: method 4 or 5 with its clock and RTSP port, as a real car sends them. */
+    public fun screenNotice(method: Int): Unit = send(checkNotNull(control), 1, method, Fields(mapOf(
+        1 to FieldValue.Varint(System.currentTimeMillis().toULong()), 2 to FieldValue.Varint(7236uL))).encode())
     public fun dayNight(mode: Int, kind: Int = 0): Unit =
         send(checkNotNull(control), 1, 15, Fields(mapOf(1 to FieldValue.Varint(mode.toULong()))).encode(), kind)
     /** Deterministic samples preserve raw integers and doubles without assuming any units. */

@@ -6,6 +6,7 @@ package org.openxplay.stream.clink.wfd
 
 import java.util.UUID
 import org.openxplay.stream.clink.ClinkPorts
+import org.openxplay.stream.clink.ClinkHevcMode
 import org.openxplay.stream.core.DecoderSupport
 import org.openxplay.stream.core.DisplayInfo
 
@@ -15,11 +16,15 @@ public data class WfdMode(public val width: Int, public val height: Int, public 
 
 /** Pure source negotiation, confined to its RTSP worker. Transport remains separate. */
 public class WfdSource(private val address: String, private val ports: ClinkPorts,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
     private val display: () -> DisplayInfo = { DisplayInfo(1280, 720, 160, 30.0) }) {
     public var mode: WfdMode = WfdMode(1280, 720, 30, 5, 1, 1)
         private set
     public var decoders: List<DecoderSupport> = emptyList()
         private set
+    public var iccoaSupportHevc: String? = null
+        private set
+    public val hevcEnabled: Boolean get() = hevc != ClinkHevcMode.OFF && iccoaSupportHevc == "supported"
     public var playing: Boolean = false
         private set
     public var rtpPort: Int = ports.rtp
@@ -53,10 +58,12 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
             "wfd_standby_resume_capability" to "none",
             "wfd_presentation_URL" to "rtsp://$address:${ports.rtsp}/wfd1.0/streamid=0 none",
             "wfd_car_display_mode" to "mode=0;display=${mode.width}:${mode.height};dpi=${d.densityDpi};fps=${mode.fps}",
-        )
+        ) + if (hevcEnabled && hevc == ClinkHevcMode.SIGNAL) mapOf("iccoa_support_hevc" to "supported") else emptyMap()
     }
     private fun negotiate(body: String) {
         val peer = parameters(body)
+        iccoaSupportHevc = peer["iccoa_support_hevc"]
+        reports += "video caps iccoa_support_hevc=${iccoaSupportHevc ?: "absent"}"
         reports += "video caps wfd_video_formats=${peer["wfd_video_formats"]}"
         audio = peer["wfd_audio_codecs"].orEmpty().split(',').any { entry ->
             val fields = entry.trim().split(Regex("\\s+"))
@@ -83,6 +90,11 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
                     }
                 }
             }
+        }
+        // The flag names no level; claim Main 4.1 so the iPhone's 720p60 H.265 passes through untouched.
+        if (hevcEnabled) {
+            supported.clear()
+            supported += DecoderSupport("hvc1.1.6.L123.B0", true)
         }
         mode = checkNotNull(selected) { "projection_timing_mismatch" }; decoders = supported.distinct()
         peer["wfd_client_rtp_ports"]?.let {

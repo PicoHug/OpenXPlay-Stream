@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import org.openxplay.stream.core.VideoCodec
 import org.openxplay.stream.core.audio.Adts
+import org.openxplay.stream.core.codec.HevcConfig
 import org.openxplay.stream.core.codec.AvcConfig
 import org.openxplay.stream.core.codec.Nal
 
@@ -17,8 +18,9 @@ public data class CapturedAccessUnit(
     public val sps: ByteArray,
     public val keyFrame: Boolean,
     public val pts90kHz: Long,
+    public val codec: VideoCodec = VideoCodec.H264,
 ) {
-    public val size: Pair<Int, Int> get() = AvcConfig.parseSps(sps)
+    public val size: Pair<Int, Int> get() = if (codec == VideoCodec.H265) HevcConfig.parseSps(sps) else AvcConfig.parseSps(sps)
 }
 
 public data class CapturedAudioUnit(public val data: ByteArray, public val pts90kHz: Long)
@@ -37,6 +39,7 @@ internal class TsCapture {
         private set
     private var pmtPid = -1
     private var videoPid = -1
+    private var videoCodec: VideoCodec? = null
     private val continuity = mutableMapOf<Int, Int>()
     private var rtpSequence: Int? = null
     private var ssrc: Int? = null
@@ -95,7 +98,13 @@ internal class TsCapture {
                 require(section[0] == 2.toByte() && section.size >= 21)
                 val infoLength = ((section[10].toInt() and 15) shl 8) or (section[11].toInt() and 255)
                 val stream = 12 + infoLength
-                require(section[stream] == 0x1b.toByte()) { "PMT must advertise H.264" }
+                val codec = when (section[stream].toInt() and 255) {
+                    0x1b -> VideoCodec.H264
+                    0x24 -> VideoCodec.H265
+                    else -> error("Unexpected PMT video stream type")
+                }
+                require(videoCodec == null || videoCodec == codec) { "Session video codec changed" }
+                videoCodec = codec
                 videoPid = ((section[stream + 1].toInt() and 31) shl 8) or (section[stream + 2].toInt() and 255)
                 require(videoPid == ((section[8].toInt() and 31) shl 8) or (section[9].toInt() and 255))
                 if (section.size >= stream + 14) {
@@ -141,17 +150,20 @@ internal class TsCapture {
             ((u8(11).toLong() shr 1) shl 15) or (u8(12).toLong() shl 7) or (u8(13).toLong() shr 1)
         val data = bytes.copyOfRange(9 + u8(8), bytes.size)
         val nals = Nal.units(data, Nal.Format.ANNEX_B).toList()
-        // Carlink head units reject an access unit that starts with an AUD, so the muxer keeps them
-        // out (2026-10-19); accept either form and only require a real video NAL first.
-        require(nals.first()[0].toInt() and 31 in setOf(1, 5, 7, 8, 9)) { "video NAL required" }
-        nals.lastOrNull { it[0].toInt() and 31 == 7 }?.let { currentSps = it.copyOf() }
-        val key = Nal.isKeyFrame(data, VideoCodec.H264, Nal.Format.ANNEX_B)
+        val codec = checkNotNull(videoCodec)
+        fun type(nal: ByteArray): Int = if (codec == VideoCodec.H265) (nal[0].toInt() ushr 1) and 63 else nal[0].toInt() and 31
+        val spsType = if (codec == VideoCodec.H265) 33 else 7
+        val parameterTypes = if (codec == VideoCodec.H265) setOf(32, 33, 34) else setOf(7, 8)
+        val vcl = if (codec == VideoCodec.H265) (0..31).toSet() else setOf(1, 5)
+        require(type(nals.first()) in vcl + parameterTypes + if (codec == VideoCodec.H265) setOf(35) else setOf(9))
+        nals.lastOrNull { type(it) == spsType }?.let { currentSps = it.copyOf() }
+        val key = Nal.isKeyFrame(data, codec, Nal.Format.ANNEX_B)
         if (key) {
-            require(nals.any { it[0].toInt() and 31 == 7 } && nals.any { it[0].toInt() and 31 == 8 })
+            require(parameterTypes.all { expected -> nals.any { type(it) == expected } })
             require(0 in pesTables && pmtPid in pesTables) { "PAT/PMT required before IDR" }
         }
-        require(nals.any { it[0].toInt() and 31 in setOf(1, 5) })
-        units += CapturedAccessUnit(data, checkNotNull(currentSps).copyOf(), key, pts)
+        require(nals.any { type(it) in vcl })
+        units += CapturedAccessUnit(data, checkNotNull(currentSps).copyOf(), key, pts, codec)
     }
     private fun crc(bytes: ByteArray): Int {
         var value = -1

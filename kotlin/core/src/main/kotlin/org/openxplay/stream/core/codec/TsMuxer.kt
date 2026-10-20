@@ -6,9 +6,10 @@ package org.openxplay.stream.core.codec
 
 import java.io.ByteArrayOutputStream
 import org.openxplay.stream.core.audio.Adts
+import org.openxplay.stream.core.VideoCodec
 
 /**
- * Single-program H.264/AAC transport stream. Calls must be serialized and non-reentrant.
+ * Single-program H.264 or H.265/AAC transport stream. Calls must be serialized and non-reentrant.
  * The sink consumes a borrowed 188-byte buffer synchronously; copy it to retain packets.
  * Timestamps use a shared, nonnegative microsecond timeline without B-frames.
  * Submit calls in timestamp order. PCR cadence follows media time, including gaps;
@@ -22,13 +23,13 @@ public class TsMuxer(
     public val programNumber: Int = 1,
     public val audioEnabled: Boolean = false,
     /**
-     * Carlink callers must pass false: the ICCOA head unit decides whether to feed its decoder by
-     * inspecting the first bytes of each access unit (VideoQueueManager.isKeyFrame accepts NAL 7 or 5
-     * only), so an access unit delimiter (NAL 9) in front hides every keyframe and the head unit
-     * discards the whole stream — black picture with working audio (2026-10-19).
+     * Carlink callers must pass false: the head unit detects keyframes only when the access unit
+     * starts with parameter sets or an IDR slice. A leading AUD hides the keyframe.
      */
     public val insertAud: Boolean = true,
     public val psiIntervalFrames: Int = 15,
+    public val videoCodec: VideoCodec = VideoCodec.H264,
+    public val pmtVersion: Int = 0,
 ) {
     private val packet = ByteArray(188)
     private val counters = IntArray(8192)
@@ -43,6 +44,7 @@ public class TsMuxer(
         require(listOf(pmtPid, videoPid, audioPid).all { it in 0x20..0x1ffe }) { "Invalid elementary or PMT PID" }
         require(setOf(pmtPid, videoPid, audioPid).size == 3) { "PIDs must be distinct" }
         require(programNumber in 1..0xffff) { "Invalid program number" }
+        require(pmtVersion in 0..31) { "Invalid PMT version" }
         require(psiIntervalFrames > 0) { "PSI interval must be positive" }
         pat = section(byteArrayOf(
             0, 0xb0.toByte(), 13, 0, 1, 0xc1.toByte(), 0, 0,
@@ -52,19 +54,20 @@ public class TsMuxer(
         val body = ByteArrayOutputStream()
         body.write(byteArrayOf(
             2, 0xb0.toByte(), (if (audioEnabled) 23 else 18).toByte(),
-            (programNumber ushr 8).toByte(), programNumber.toByte(), 0xc1.toByte(), 0, 0,
+            (programNumber ushr 8).toByte(), programNumber.toByte(), (0xc1 or (pmtVersion shl 1)).toByte(), 0, 0,
             (0xe0 or (videoPid ushr 8)).toByte(), videoPid.toByte(), 0xf0.toByte(), 0,
         ))
         fun stream(type: Int, pid: Int) {
             body.write(byteArrayOf(type.toByte(), (0xe0 or (pid ushr 8)).toByte(), pid.toByte(), 0xf0.toByte(), 0))
         }
-        stream(0x1b, videoPid)
+        stream(if (videoCodec == VideoCodec.H265) 0x24 else 0x1b, videoPid)
         if (audioEnabled) stream(0x0f, audioPid)
         pmt = section(body.toByteArray())
     }
 
     /** AVCC always uses four-byte lengths, independently of the source avcC length size. */
     public fun writeVideo(frame: ByteArray, config: AvcConfig, ptsUs: Long, keyFrame: Boolean) {
+        require(videoCodec == VideoCodec.H264) { "Muxer codec mismatch" }
         require(ptsUs >= 0) { "Negative timestamp" }
         require(frame.isNotEmpty()) { "Empty video access unit" }
         val annexB = Nal.avccToAnnexB(frame) // Validate before emitting anything.
@@ -77,11 +80,35 @@ public class TsMuxer(
             }
         }
         payload.write(annexB)
+        writeVideoPayload(payload.toByteArray(), ptsUs, keyFrame)
+    }
+
+    /** Four-byte length-prefixed HEVC; every IRAP starts with hvcC parameter sets, never an AUD. */
+    public fun writeVideo(frame: ByteArray, config: HevcConfig, ptsUs: Long, keyFrame: Boolean) {
+        require(videoCodec == VideoCodec.H265) { "Muxer codec mismatch" }
+        require(ptsUs >= 0) { "Negative timestamp" }
+        require(frame.isNotEmpty()) { "Empty video access unit" }
+        val units = Nal.units(frame).toList()
+        require(units.all { it.size >= 2 }) { "Truncated HEVC NAL header" }
+        fun type(nal: ByteArray): Int = (nal[0].toInt() ushr 1) and 63
+        val irap = units.any { type(it) in 16..21 }
+        val payload = ByteArrayOutputStream()
+        fun append(nal: ByteArray) {
+            payload.write(byteArrayOf(0, 0, 0, 1)); payload.write(nal)
+        }
+        if (irap) (config.vps + config.sps + config.pps).forEach(::append)
+        // Replace in-band parameter sets and omit optional prefix SEI on IRAPs so the slice follows
+        // VPS/SPS/PPS directly. Prefix SEI must not be moved behind the slice as if it were suffix SEI.
+        units.filter { type(it) != 35 && (!irap || type(it) !in 32..34 && type(it) != 39) }.forEach(::append)
+        writeVideoPayload(payload.toByteArray(), ptsUs, irap || keyFrame)
+    }
+
+    private fun writeVideoPayload(payload: ByteArray, ptsUs: Long, keyFrame: Boolean) {
         if (!tablesWritten || keyFrame || videoFrames == 0) writeTables()
         videoFrames = (videoFrames + 1) % psiIntervalFrames
         advancePcr(ptsUs)
         val pcr = if (lastPcrUs == null || keyFrame || ptsUs - lastPcrUs!! >= PCR_INTERVAL_US) ptsUs else null
-        writePes(videoPid, 0xe0, payload.toByteArray(), ptsUs, keyFrame, pcr)
+        writePes(videoPid, 0xe0, payload, ptsUs, keyFrame, pcr)
         if (pcr != null) lastPcrUs = pcr
     }
 

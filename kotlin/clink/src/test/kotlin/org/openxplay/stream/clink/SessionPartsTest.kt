@@ -58,6 +58,64 @@ class SessionPartsTest {
         assertEquals("RTSP/1.0 454 Session Not Found", source.handle(RtspMessage("PLAY * RTSP/1.0",
             mapOf("cseq" to "23", "session" to "wrong"))).single().line)
     }
+    @Test fun `HEVC modes require peer support and only SIGNAL adds one M4 line`() {
+        fun negotiate(mode: ClinkHevcMode, flag: String?): Pair<WfdSource, String> {
+            val source = WfdSource("127.0.0.1", ClinkPorts(), mode)
+            val get = source.handle(response(source.start())).single()
+            val body = fixture() + (flag?.let { "\r\niccoa_support_hevc: $it\r\n" } ?: "")
+            return source to source.handle(response(get, body)).single().body
+        }
+        val baseline = negotiate(ClinkHevcMode.OFF, null).second
+        for (mode in ClinkHevcMode.entries) for (flag in listOf(null, "supported", "unsupported")) {
+            val (source, m4) = negotiate(mode, flag)
+            val enabled = mode != ClinkHevcMode.OFF && flag == "supported"
+            assertEquals(enabled, source.hevcEnabled)
+            if (enabled) assertEquals(listOf(org.openxplay.stream.core.DecoderSupport("hvc1.1.6.L123.B0", true)), source.decoders)
+            else assertTrue(source.decoders.isNotEmpty() && source.decoders.all { it.codecString.startsWith("avc1.") })
+            assertEquals((if (enabled && mode == ClinkHevcMode.SIGNAL) "iccoa_support_hevc: supported\r\n" else "") + baseline, m4)
+            assertContains(source.takeReports(), "video caps iccoa_support_hevc=${flag ?: "absent"}")
+        }
+    }
+    @Test fun `default mode locks advertised HEVC without signalling M4`() {
+        val source = WfdSource("127.0.0.1", ClinkPorts())
+        val get = source.handle(response(source.start())).single()
+        val m4 = source.handle(response(get, fixture() + "\r\niccoa_support_hevc: supported\r\n")).single()
+        assertEquals(listOf("hvc1.1.6.L123.B0"), source.decoders.map { it.codecString })
+        assertFalse(m4.body.contains("iccoa_support_hevc"))
+    }
+    @Test fun `HEVC placeholder matches AVC playback and has no AUD`() {
+        val avc = BundledPlaceholderVideo()
+        val clip = BundledHevcPlaceholderVideo()
+        assertEquals(avc.frames.size, clip.frames.size); assertEquals(avc.fps, clip.fps)
+        assertEquals(avc.format.width to avc.format.height, clip.format.width to clip.format.height)
+        val config = org.openxplay.stream.core.codec.HevcConfig.parse(clip.format.config)
+        assertEquals(1, config.profile); assertEquals(93, config.level)
+        assertTrue(org.openxplay.stream.core.codec.Nal.isKeyFrame(clip.frames.first(), VideoCodec.H265))
+        assertTrue(clip.frames.flatMap { org.openxplay.stream.core.codec.Nal.units(it).toList() }
+            .none { (it[0].toInt() ushr 1) and 63 == 35 })
+    }
+    @Test fun `HEVC placeholder TS decodes all thirty frames`() {
+        val ffprobe = java.nio.file.Path.of("/opt/homebrew/bin/ffprobe")
+        org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.isExecutable(ffprobe))
+        val clip = BundledHevcPlaceholderVideo()
+        val config = org.openxplay.stream.core.codec.HevcConfig.parse(clip.format.config)
+        val path = java.nio.file.Files.createTempFile("placeholder-hevc-", ".ts")
+        try {
+            java.nio.file.Files.newOutputStream(path).use { output ->
+                val muxer = org.openxplay.stream.core.codec.TsMuxer({ output.write(it) }, videoCodec = VideoCodec.H265)
+                clip.frames.forEachIndexed { index, data -> muxer.writeVideo(data, config, index * 1_000_000L / clip.fps, index == 0) }
+            }
+            val process = ProcessBuilder(ffprobe.toString(), "-v", "error", "-count_frames", "-show_entries",
+                "stream=codec_name,width,height,nb_read_frames", "-of", "default=nw=1", path.toString()).redirectErrorStream(true).start()
+            try {
+                assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS))
+                val report = process.inputStream.bufferedReader().readText()
+                assertEquals(0, process.exitValue(), report)
+                assertEquals(setOf("codec_name=hevc", "width=1280", "height=720", "nb_read_frames=30"),
+                    report.lineSequence().filter { it.isNotBlank() }.toSet())
+            } finally { if (process.isAlive) process.destroyForcibly() }
+        } finally { java.nio.file.Files.deleteIfExists(path) }
+    }
     @Test fun `AAC negotiation requires bitmap bit zero`() {
         for ((codecs, expected) in listOf("AAC 00000001 00" to true, "LPCM 00000003 00, AAC 00000003 00" to true,
             "AAC 00000002 00" to false, "AAC invalid 00" to false, "none" to false)) {
@@ -122,7 +180,8 @@ class SessionPartsTest {
         val signature = List(256) { "0" }.joinToString(",")
         val envelope = """{"content":[$content],"signature":[$signature],"version":1,"signAlgorithm":"SHA256withRSA","cryptoConfigIndex":"v1"}"""
         fun body(json: String) = Fields(mapOf(1 to FieldValue.Bytes(java.util.Base64.getEncoder().encode(json.toByteArray())))).encode()
-        Certificate.check(body(envelope))
+        assertEquals(mapOf("short_name" to "car", "product_name" to "model", "vendor_name" to "vendor",
+            "vendor_id" to "v1", "product_id" to "p1"), Certificate.check(body(envelope)))
         assertFailsWith<IllegalArgumentException> { Certificate.check(body(envelope.replace("\"version\":1", "\"version\":2"))) }
         assertFailsWith<IllegalArgumentException> { Certificate.check(body(envelope.replace("\"signature\":[0", "\"signature\":[255"))) }
     }

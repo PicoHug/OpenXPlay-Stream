@@ -21,7 +21,7 @@ import org.openxplay.stream.clink.uibc.UibcDecoder
 import org.openxplay.stream.clink.wfd.*
 import org.openxplay.stream.core.*
 
-/** Failures that mean the saved peer key no longer belongs to this head unit. */
+/** Failure reasons meaning the saved head-unit key no longer belongs to this head unit. */
 private val stalePeerReasons = setOf("peer_key_changed", "auth_signature_failed")
 
 /** One authenticated socket generation. Run on a lifecycle worker; stop is non-blocking. */
@@ -44,6 +44,7 @@ public class ClinkSession(
     private val onLinkStalled: (Boolean) -> Unit = {},
     private val trace: ClinkTrace = ClinkTrace.NONE,
     sessionNumber: Long? = null,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
 ) {
     internal val traceSession: Long = sessionNumber ?: nextTraceSession()
     internal companion object {
@@ -196,6 +197,7 @@ public class ClinkSession(
     private lateinit var wfd: WfdSource
     private lateinit var touch: UibcDecoder
     public val headUnitId: String get() = addresses?.headUnitId.orEmpty()
+    public val hevcEnabled: Boolean get() = decoderSnapshot.any { it.codecString.startsWith("hvc1.") }
     public val decoders: List<DecoderSupport> get() = decoderSnapshot
     @Volatile private var decoderSnapshot: List<DecoderSupport> = emptyList()
     public val isPlaying: Boolean get() = playing && ready && !stopped && !stopRequested
@@ -279,10 +281,10 @@ public class ClinkSession(
         val decoder = FrameReader(); val buffer = ByteArray(65536)
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var retries = 0
-        // A head unit that rebuilds its pairing store on boot presents a new P-256 identity while the
-        // saved pin still holds the old one; every later attempt then dies in quick mode
-        // (auth_signature_failed) or in the full exchange (peer_key_changed) and never recovers
-        // without wiping app data (2026-10-19). Drop the stale pin and re-pair once on this socket.
+        // A head unit that rebuilds its pairing store at boot presents a new P-256 identity while the stored
+        // pin is still the old one; every attempt then fails in quick mode (auth_signature_failed) or in the
+        // full handshake (peer_key_changed), and only clearing app data recovered (2026-10-19). Drop the
+        // stale pin and pair again once on this socket.
         var repinned = false
         while (!stopped && !stopRequested) {
             if (linkLost) throw linkLossCause ?: IllegalStateException("link_lost")
@@ -303,7 +305,7 @@ public class ClinkSession(
                 val failed = attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.reason
                 if (failed != null) {
                     if (failed !in stalePeerReasons || repinned) error(failed)
-                    // Forget before retrying: the full exchange must not compare against that key.
+                    // Forget before retrying: the full handshake must not compare against the old key.
                     trustStore.forgetPeer(a.headUnitId)
                     listener.diagnostic("auth repin reason=$failed")
                     repinned = true
@@ -432,6 +434,14 @@ public class ClinkSession(
                         require(frame.kind == 2 && frame.sequence == configSequence) { "unexpected_configuration" }
                         display = Control.display(body, display); controlConfigured = true; reportCapabilities()
                     }
+                    // Methods 4 and 5 arrive when the car takes the screen and gives it back (2026-10-20,
+                    // shifting through reverse; field 1 epoch ms, field 2 its RTSP port). Its decoder restarts
+                    // on return, and H.265 passthrough has no encoder that sends periodic key frames.
+                    4, 5 -> {
+                        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), traceSession,
+                            "keyframe_request", "head_unit_m${frame.method}"))
+                        onKeyframe()
+                    }
                     23 -> { stopRequested = true; return }
                     12 -> {
                         check(certified)
@@ -439,8 +449,8 @@ public class ClinkSession(
                         val code = f.number(2); val action = f.number(1)
                         require(code <= 65535uL && action <= 2uL && f.number(3) <= 0xffffffffuL)
                         val mapped = UibcDecoder.key(code.toInt(), action.toInt(), Origin(outputId, headUnitId))
-                        // 车机的方向盘/中控按键到这里了；把原始 code 记下来，
-                        // 这样遇到用非标准键值的车型时可以照着映射，不用猜。
+                        // Log the raw code so a head unit with non-standard key values can be mapped from
+                        // the trace instead of guessed.
                         listener.diagnostic("control key code=${code.toInt()} action=${action.toInt()} " +
                             "mapped=${mapped?.code ?: "none"} down=${mapped?.down}")
                         mapped?.let(onControl)
@@ -449,7 +459,8 @@ public class ClinkSession(
             }
             ports.cert -> {
                 require(frame.category == 6 && frame.method == 1 && !certified)
-                Certificate.check(body)
+                val identity = Certificate.check(body)
+                if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Link(System.nanoTime(), traceSession, "head_unit_certificate", identity))
                 trustStore.savePeerKey(headUnitId, checkNotNull(peerKey))
                 certified = true
             }
@@ -476,7 +487,7 @@ public class ClinkSession(
             val a = checkNotNull(addresses)
             val local = ipv4(a.localIpv4); val peer = ipv4(a.headUnitIpv4)
             touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession)
-            wfd = WfdSource(a.localIpv4, ports) { display }
+            wfd = WfdSource(a.localIpv4, ports, hevc) { display }
             // Bind before AuthConfirm; reverse connections can arrive immediately.
             listOf(ports.control, ports.cert, ports.media, ports.rtsp, ports.uibc).forEach { listen(it, local, peer) }
             if (vehicleData) { listen(ports.sensor, local, peer); reportSensorState() }
@@ -522,7 +533,13 @@ public class ClinkSession(
                             for (message in rtspReader.feed(event.bytes)) {
                                 rtspEvent("RX", message)
                                 val responses = wfd.handle(message)
-                                responses.forEach { rtspWrite(sockets.getValue(ports.rtsp), it) }
+                                responses.forEach {
+                                    if (trace !== ClinkTrace.NONE && it.line.startsWith("SET_PARAMETER") && it.body.contains("wfd_video_formats:"))
+                                        trace.emit(ClinkTraceEvent.Link(System.nanoTime(), traceSession, "hevc_m4", mapOf(
+                                            "mode" to hevc.name, "peer" to (wfd.iccoaSupportHevc ?: "absent"),
+                                            "variant" to if (wfd.hevcEnabled && hevc == ClinkHevcMode.SIGNAL) "signal" else "unchanged")))
+                                    rtspWrite(sockets.getValue(ports.rtsp), it)
+                                }
                                 mode = wfd.mode; destinationPort = wfd.rtpPort; selectedAudio = wfd.audio
                                 reportCapabilities(); updatePlay()
                                 wfd.takeReports().forEach(listener::diagnostic)

@@ -10,7 +10,8 @@ import kotlinx.serialization.json.*
 
 /** Structural checks only; no manufacturer signature or vehicle identity verification. */
 public object Certificate {
-    public fun check(body: ByteArray): Unit {
+    /** Returns the head unit's self-described identity (names and ids), which nothing verifies. */
+    public fun check(body: ByteArray): Map<String, String> {
         val encoded = Fields.decode(body).bytes(1)
         require(encoded.size <= 87384 && encoded.size % 4 == 0)
         val raw = Base64.getDecoder().decode(encoded)
@@ -36,7 +37,7 @@ public object Certificate {
         require(signedBytes("signature", 1024).size >= 256)
         val metadata = jsonObject(signedBytes("content", 32768))
         require(metadata.keys == setOf("short_name", "product_name", "vendor_name", "vendor_id", "product_id"))
-        metadata.keys.forEach { text(metadata, it, if (it.endsWith("_id")) 64 else 512) }
+        return metadata.keys.associateWith { text(metadata, it, if (it.endsWith("_id")) 64 else 512) }
     }
     private fun text(obj: JsonObject, key: String, limit: Int): String {
         val value = obj[key] as? JsonPrimitive ?: error("invalid_certificate")
