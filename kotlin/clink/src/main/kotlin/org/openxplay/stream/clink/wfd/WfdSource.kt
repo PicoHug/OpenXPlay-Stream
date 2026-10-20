@@ -85,12 +85,10 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
                 if (profiles and profile != 0 && levels and bit != 0) {
                     supported += DecoderSupport("avc1.${if (profile == 1) "42E0" else "6400"}${"%02X".format(level)}", true)
                     if (selected == null) {
-                        // H.265 claims Main Level 4.1, which covers 1920x1080p30 (2,073,600 samples).
-                        // 1080p60 would need Level 5.1, and at 60 fps the encoder and the muxer take
-                        // enough CPU that the audio queue starts dropping packets (2026-10-20), so the
-                        // highest mode stays at 1080p30. The head unit scales the stream onto its screen.
+                        // H.265 claims Main Level 5.1, which covers 1920x1080p60 (2,073,600 samples at
+                        // 60 fps). The head unit scales the stream onto its screen.
                         // H.264 keeps 720p30, the size the head units are known to accept.
-                        val wanted = if (hevcEnabled) listOf(Triple(1920, 1080, 30), Triple(1280, 720, 30))
+                        val wanted = if (hevcEnabled) listOf(Triple(1920, 1080, 60), Triple(1920, 1080, 30), Triple(1280, 720, 30))
                             else listOf(Triple(1280, 720, 30))
                         val timing = wanted.firstNotNullOfOrNull { size ->
                             timings.firstOrNull { it.first == size && cea and (1L shl it.second) != 0L }

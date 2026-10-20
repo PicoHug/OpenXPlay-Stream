@@ -306,8 +306,15 @@ public class ClinkOutput(
             var reportedWaitingDrops = 0L
             var reportedAudioDrops = 0L
             var transportPts = -1L
+            // Video and audio carry independent clocks: the phone timestamps video in its own
+            // timeline and the relay timestamps audio in another. One shared offset made a video
+            // re-anchor move the audio, and every audio packet that then fell behind the transport
+            // clock was dropped without a trace (2026-10-20).
             var liveOffset = 0L
             var audioOffset: Long? = null
+            // How far the audio timeline may lag the transport clock before it is re-anchored.
+            // Beyond this the audio would play out of sync with the picture.
+            var audioReanchored = 0L
             var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
             var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
             var lastAudioPts = -1L
@@ -437,6 +444,9 @@ public class ClinkOutput(
                     val wasLive = gate.live
                     if (gate.accept(f.keyFrame)) {
                         if (!wasLive) {
+                            // Anchor the video timeline on the shared transport clock. The phone's
+                            // video PTS advances in its own timeline, and it can jump when the head
+                            // unit takes the screen and gives it back; the offset absorbs that.
                             liveOffset = maxOf(0L, outputPts + 1_000_000 / clip.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
                             // The absolute PTS decides whether the receiver renders at all: a video timeline far
@@ -491,8 +501,16 @@ public class ClinkOutput(
                     if (!writable) return@repeat
                     val audio = synchronized(run.lock) {
                         val candidate = run.audio.peekFirst()
-                        if (!gate.live && candidate != null && audioOffset == null) audioOffset = maxOf(0L, outputPts) - candidate.ptsUs
-                        val offset = if (gate.live) liveOffset else audioOffset ?: 0L
+                        // The audio runs on its own offset. The video's offset belongs to the
+                        // phone's video timeline and jumps on its own schedule, so the audio never
+                        // inherits it; it is anchored on the shared transport clock instead.
+                        // The audio is anchored on the shared transport clock, never on the video's
+                        // offset: the phone's video timeline jumps on its own schedule and would
+                        // otherwise drag the audio with it (2026-10-20).
+                        if (candidate != null && audioOffset == null) {
+                            audioOffset = maxOf(0L, transportPts, outputPts) - candidate.ptsUs
+                        }
+                        val offset = audioOffset ?: 0L
                         // Phones deliver video in batches with gaps of up to ~1 s; between video writes the
                         // transport clock keeps running so audio is not starved and dropped (2026-10-15).
                         val clockPts = if (videoWrittenAt == 0L) outputPts else outputPts + (System.nanoTime() - videoWrittenAt) / 1000
@@ -501,8 +519,20 @@ public class ClinkOutput(
                         } else null
                     }
                     if (audio != null) {
-                        val mapped = audio.ptsUs + (if (gate.live) liveOffset else audioOffset ?: 0L)
-                        if (mapped >= 0 && mapped >= transportPts - 50_000) {
+                        val base = audioOffset ?: 0L
+                        val mapped = audio.ptsUs + base
+                        if (mapped >= 0) {
+                            // The transport clock moved ahead of the audio (the phone's video timeline
+                            // jumped, or the picture stalled while the audio kept running). Dropping
+                            // the packet silenced whole stretches of a call, so re-anchor the audio on
+                            // the transport clock instead and keep the sound (2026-10-20).
+                            val lag = transportPts - mapped
+                            if (lag > AUDIO_REANCHOR_US) {
+                                audioOffset = base + lag
+                                audioReanchored++
+                                if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(),
+                                    session.traceSession, "audio_reanchor", "lag=${lag}us tr=$transportPts mapped=$mapped"))
+                            }
                             // Keep mux calls ordered; bounded late arrival can shift PTS by at most 50 ms.
                             val pts = maxOf(mapped, transportPts)
                             val result = emit(session, pts) { transport().writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
@@ -530,7 +560,7 @@ public class ClinkOutput(
                     if (trace !== ClinkTrace.NONE && now - clockAt >= 2_000_000_000L) {
                         clockAt = now
                         trace.emit(ClinkTraceEvent.Video(now, session.traceSession, "clock",
-                            "v=$outputPts a=$lastAudioPts t=$transportPts off=$liveOffset"))
+                            "v=$outputPts a=$lastAudioPts t=$transportPts off=$liveOffset aoff=${audioOffset ?: -1} re=$audioReanchored"))
                     }
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
                         liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
@@ -551,6 +581,13 @@ public class ClinkOutput(
 
 /** How far video timestamps may lead the shared transport clock before they are re-anchored. */
 private const val MAX_LEAD_US: Long = 500_000
+
+/**
+ * How far the audio timeline may lag the transport clock before it is re-anchored.
+ * The phone's video timeline jumps on its own schedule; the audio has to follow the transport
+ * clock instead of being dropped, or a call goes silent for the length of the jump (2026-10-20).
+ */
+private const val AUDIO_REANCHOR_US: Long = 250_000
 
 /** Everything the Carlink media path retains at one instant; every field has a fixed bound. */
 internal data class MediaBacklog(
