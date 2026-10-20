@@ -21,6 +21,9 @@ import org.openxplay.stream.clink.uibc.UibcDecoder
 import org.openxplay.stream.clink.wfd.*
 import org.openxplay.stream.core.*
 
+/** Failures that mean the saved peer key no longer belongs to this head unit. */
+private val stalePeerReasons = setOf("peer_key_changed", "auth_signature_failed")
+
 /** One authenticated socket generation. Run on a lifecycle worker; stop is non-blocking. */
 public class ClinkSession(
     private val link: ClinkLink,
@@ -268,13 +271,19 @@ public class ClinkSession(
         socket.soTimeout = 250
         val a = checkNotNull(addresses)
         val pinned = trustStore.loadPeerKey(a.headUnitId)
-        val auth = Auth(identity, deviceId, deviceName, a.localIpv4, pinned)
+        var auth = Auth(identity, deviceId, deviceName, a.localIpv4, pinned)
         var full = pinned == null
         var pin: String? = if (full) pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled") else null
-        var attempt = auth.start(now(), 1, pin)
+        var sequence = 1L
+        var attempt = auth.start(now(), sequence, pin)
         val decoder = FrameReader(); val buffer = ByteArray(65536)
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var retries = 0
+        // A head unit that rebuilds its pairing store on boot presents a new P-256 identity while the
+        // saved pin still holds the old one; every later attempt then dies in quick mode
+        // (auth_signature_failed) or in the full exchange (peer_key_changed) and never recovers
+        // without wiping app data (2026-10-19). Drop the stale pin and re-pair once on this socket.
+        var repinned = false
         while (!stopped && !stopRequested) {
             if (linkLost) throw linkLossCause ?: IllegalStateException("link_lost")
             attempt.frames.forEach { frameEvent("TX", ports.auth, it, it.body, false); write(socket, it.encode()) }
@@ -291,15 +300,31 @@ public class ClinkSession(
             for (frame in frames) {
                 frameEvent("RX", ports.auth, frame, frame.body, false)
                 attempt = auth.receive(frame, now())
-                attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.let { error(it.reason) }
+                val failed = attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.reason
+                if (failed != null) {
+                    if (failed !in stalePeerReasons || repinned) error(failed)
+                    // Forget before retrying: the full exchange must not compare against that key.
+                    trustStore.forgetPeer(a.headUnitId)
+                    listener.diagnostic("auth repin reason=$failed")
+                    repinned = true
+                    full = true
+                    pin = pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled")
+                    sequence = (sequence + 2) and 0xffffffffL
+                    auth = Auth(identity, deviceId, deviceName, a.localIpv4, null)
+                    attempt = auth.start(now(), sequence, pin, forceFull = true)
+                    deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+                    break
+                }
                 val result = attempt.events.filterIsInstance<AuthEvent.Result>().firstOrNull()?.result
                 if (result == AuthResult.PIN_REQUIRED && !full && retries++ == 0) {
                     full = true; pin = pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled")
-                    attempt = auth.start(now(), 3, pin, forceFull = true)
+                    sequence = (sequence + 2) and 0xffffffffL
+                    attempt = auth.start(now(), sequence, pin, forceFull = true)
                     deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
                 } else if (result == AuthResult.CONFIRMATION_REQUIRED && retries++ < 3) {
                     check(pinProvider.confirmPairing(a.headUnitId)) { "pairing_confirmation_cancelled" }
-                    attempt = auth.start(now(), 5, pin, forceFull = full, confirmed = true)
+                    sequence = (sequence + 2) and 0xffffffffL
+                    attempt = auth.start(now(), sequence, pin, forceFull = full, confirmed = true)
                     deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
                 } else if (result != null && result != AuthResult.SUCCESS) error("auth_${result.name.lowercase()}")
             }

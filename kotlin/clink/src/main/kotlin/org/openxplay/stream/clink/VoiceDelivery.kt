@@ -84,7 +84,8 @@ internal class VoiceDelivery {
                         streams.remove(command.stream)
                         formats.remove(command.stream)
                         val f = command.format
-                        if (f != null && f.role != AudioRole.MEDIA && f.codec == AudioCodec.PCM_S16LE &&
+                        if (f != null && (f.role == AudioRole.VOICE || f.role == AudioRole.TELEPHONY) &&
+                            f.codec == AudioCodec.PCM_S16LE &&
                             f.sampleRate in 8000..48000 && f.channels in 1..2) {
                             mixer.removeStream(command.stream)
                             mixer.addStream(command.stream, 16000, 1)

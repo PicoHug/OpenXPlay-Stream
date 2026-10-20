@@ -45,7 +45,9 @@ public class BundledPlaceholderVideo : PlaceholderVideo {
         for (unit in units) {
             val type = unit[0].toInt() and 31
             if (type == 9) flush()
-            if (type in listOf(1, 5, 6, 9)) {
+            // The delimiter only marks the boundary; keeping it in front of the slice hid the keyframe
+            // from the head unit, which inspects byte 4 of every access unit (2026-10-19).
+            if (type in listOf(1, 5, 6)) {
                 DataOutputStream(current).apply { writeInt(unit.size); write(unit) }
             }
         }

@@ -21,6 +21,12 @@ public class TsMuxer(
     public val audioPid: Int = 0x102,
     public val programNumber: Int = 1,
     public val audioEnabled: Boolean = false,
+    /**
+     * Carlink callers must pass false: the ICCOA head unit decides whether to feed its decoder by
+     * inspecting the first bytes of each access unit (VideoQueueManager.isKeyFrame accepts NAL 7 or 5
+     * only), so an access unit delimiter (NAL 9) in front hides every keyframe and the head unit
+     * discards the whole stream — black picture with working audio (2026-10-19).
+     */
     public val insertAud: Boolean = true,
     public val psiIntervalFrames: Int = 15,
 ) {

@@ -67,6 +67,13 @@ public class ClinkOutput(
         var requestKeyframe = false
     }
     @Volatile private var current: Run? = null
+
+    /**
+     * Only speech and phone calls may open the vehicle voice channel. System sounds (keyboard
+     * clicks, alerts) are mixed by a real head unit; sending them here makes Carlink duck or pause
+     * the media channel (2026-10-19).
+     */
+    private fun voiceRole(role: AudioRole): Boolean = role == AudioRole.VOICE || role == AudioRole.TELEPHONY
     private val opened = AtomicBoolean(false)
     override fun open(host: OutputHost) {
         check(opened.compareAndSet(false, true)) { "output_already_open" }
@@ -147,7 +154,7 @@ public class ClinkOutput(
         if (screen != ScreenId.MAIN) return
         val run = current ?: return
         synchronized(run.lock) {
-            if (run.format !== format) {
+            if (!sameVideoFormat(run.format, format)) {
                 if (trace !== ClinkTrace.NONE) {
                     val config = if (format?.codec == VideoCodec.H264) runCatching { AvcConfig.parse(format.config) }.getOrNull() else null
                     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
@@ -185,9 +192,9 @@ public class ClinkOutput(
             run.mediaStream = run.mediaFormats.keys.lastOrNull()
             if (previous != run.mediaStream || previous == stream) { run.audio.clear(); run.audioBytes = 0 }
             run.voiceStreams.remove(stream)
-            if (format != null && format.role != AudioRole.MEDIA && format.codec == AudioCodec.PCM_S16LE &&
+            if (format != null && voiceRole(format.role) && format.codec == AudioCodec.PCM_S16LE &&
                 format.sampleRate in 8000..48000 && format.channels in 1..2) run.voiceStreams.add(stream)
-            run.voice.format(stream, format)
+            run.voice.format(stream, format?.takeIf { voiceRole(it.role) })
         }
     }
     override fun onAudioPacket(packet: AudioPacket) {
@@ -218,6 +225,19 @@ public class ClinkOutput(
         synchronized(run.lock) { run.active.set(false) }
         run.session?.stop()
     }
+    /**
+     * The iPhone repeats an identical configuration with every keyframe, and a passthrough source
+     * hands out a fresh [VideoFormat] instance each time. Comparing identities reset the queue,
+     * bumped the revision and forced another keyframe every second (Carlink flicker, 2026-10-19),
+     * so compare the fields that actually change the encoded stream instead.
+     */
+    private fun sameVideoFormat(a: VideoFormat?, b: VideoFormat?): Boolean {
+        if (a === b) return true
+        if (a == null || b == null) return false
+        return a.codec == b.codec && a.codecString == b.codecString &&
+            a.width == b.width && a.height == b.height && a.config.contentEquals(b.config)
+    }
+
     /**
      * Never calls the host under [Run.lock]: the hub delivers frames into this output from threads that
      * hold an input's lock, so a host call made under our lock deadlocked with an input waiting for that
@@ -275,6 +295,8 @@ public class ClinkOutput(
             var audioOffset: Long? = null
             var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
             var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
+            var lastAudioPts = -1L
+            var clockAt = 0L
             var sent = 0L
             var reportedAt = 0L
             var mismatchReported: String? = null
@@ -321,9 +343,14 @@ public class ClinkOutput(
                     if (revision != run.revision || generation !== session) {
                         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession,
                             if (everLive) "freeze" else "reset", "revision"))
-                        gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0; audioOffset = null
+                        // Keep the audio anchor across a revision: the input clock did not restart, and
+                        // zeroing it made every audio packet fall back to raw PTS and get dropped (the
+                        // 47 -> 27 packets/s decay in the 2026-10-19 trace). Only a new session resets it.
+                        gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0
                         revision = run.revision
-                        if (generation !== session) { muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false }
+                        if (generation !== session) {
+                            muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false; audioOffset = null
+                        }
                         generation = session
                         if (format !== run.format) { format = run.format; avc = null; mismatchReported = null }
                     }
@@ -346,7 +373,11 @@ public class ClinkOutput(
                     listener.diagnostic("audio negotiated media=${session.mediaAudio}")
                 }
                 require(session.videoSize == (placeholder.format.width to placeholder.format.height)) { "placeholder_timing_mismatch" }
-                val transport = muxer ?: TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio).also { muxer = it }
+                // No access unit delimiter: the head unit only recognises a keyframe when the access unit
+                // begins with SPS (NAL 7) or an IDR slice (NAL 5), and an AUD in front of those made it
+                // discard every frame — black picture with working audio (2026-10-19).
+                val transport = muxer ?: TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio,
+                    insertAud = false).also { muxer = it }
                 val origin = Origin(id, session.headUnitId)
                 // At most one keyframe request per second per session: each one makes the phone send an IDR
                 // frame. A request inside the interval, or during a stalled send, stays pending instead of being lost.
@@ -373,9 +404,17 @@ public class ClinkOutput(
                     val wasLive = gate.live
                     if (gate.accept(f.keyFrame)) {
                         if (!wasLive) {
-                            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "live", "placeholder"))
                             liveOffset = maxOf(0L, outputPts + 1_000_000 / placeholder.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
+                            // The absolute PTS decides whether the sink ever renders: a video timeline
+                            // parked far ahead of the audio clock keeps the frames in the receiver's
+                            // future, so bytes and counters climb while the screen stays black. Detect it
+                            // once, at the transition, and re-anchor onto the shared clock.
+                            val lead = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset) - transportPts
+                            if (lead > MAX_LEAD_US) liveOffset -= lead - 1
+                            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession,
+                                if (lead > MAX_LEAD_US) "reanchor" else "live",
+                                "in=${f.ptsUs} out=$outputPts tr=$transportPts off=$liveOffset aoff=${audioOffset ?: -1} lead=$lead"))
                         }
                         val pts = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset)
                         val result = emit(session, pts) { transport.writeVideo(f.data, config, pts, f.keyFrame) }
@@ -429,6 +468,7 @@ public class ClinkOutput(
                             val pts = maxOf(mapped, transportPts)
                             val result = emit(session, pts) { transport.writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
                             if (trace !== ClinkTrace.NONE && result != Emit.DROPPED) audioFrames++
+                            lastAudioPts = pts
                             transportPts = pts
                             if (result == Emit.LATE) writable = false
                         }
@@ -447,6 +487,12 @@ public class ClinkOutput(
                         reportedAudioDrops = audioDrops
                     }
                     val dropped = run.queue.droppedCount()
+                    // What the sink actually sees: video and audio PTS on one shared transport clock.
+                    if (trace !== ClinkTrace.NONE && now - clockAt >= 2_000_000_000L) {
+                        clockAt = now
+                        trace.emit(ClinkTraceEvent.Video(now, session.traceSession, "clock",
+                            "v=$outputPts a=$lastAudioPts t=$transportPts off=$liveOffset"))
+                    }
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
                         liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
                         sendStalls, audioFrames, overflows))
@@ -464,8 +510,10 @@ public class ClinkOutput(
     }
 }
 
-/** Everything the Carlink media path retains at one instant; every field has a fixed bound. */
-internal data class MediaBacklog(
+/** Longest a video timestamp may lead the shared transport clock before the stream is re-anchored. */
+private const val MAX_LEAD_US: Long = 500_000
+
+/** Everything the Carlink media path retains at one instant; every field has a fixed bound. */internal data class MediaBacklog(
     val videoFrames: Int, val videoBytes: Long,
     val audioPackets: Int, val audioBytes: Int,
     val voiceCommands: Int, val voiceBytes: Int,
