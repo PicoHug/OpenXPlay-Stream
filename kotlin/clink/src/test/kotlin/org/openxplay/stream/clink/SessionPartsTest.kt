@@ -72,7 +72,16 @@ class SessionPartsTest {
             assertEquals(enabled, source.hevcEnabled)
             if (enabled) assertEquals(listOf(org.openxplay.stream.core.DecoderSupport("hvc1.1.6.L123.B0", true)), source.decoders)
             else assertTrue(source.decoders.isNotEmpty() && source.decoders.all { it.codecString.startsWith("avc1.") })
-            assertEquals((if (enabled && mode == ClinkHevcMode.SIGNAL) "iccoa_support_hevc: supported\r\n" else "") + baseline, m4)
+            // H.265 claims Main Level 4.1, which covers 1080p30, so the mode moves up; H.264 keeps 720p30.
+            val expected = if (enabled) {
+                assertEquals(WfdMode(1920, 1080, 30, 7, 1, 1), source.mode)
+                baseline.replace("display=1280:720;dpi=160;fps=30", "display=1920:1080;dpi=160;fps=30")
+                    .replace("28 00 01 01 00000020", "38 00 01 01 00000080")
+            } else {
+                assertEquals(WfdMode(1280, 720, 30, 5, 1, 1), source.mode)
+                baseline
+            }
+            assertEquals((if (enabled && mode == ClinkHevcMode.SIGNAL) "iccoa_support_hevc: supported\r\n" else "") + expected, m4)
             assertContains(source.takeReports(), "video caps iccoa_support_hevc=${flag ?: "absent"}")
         }
     }

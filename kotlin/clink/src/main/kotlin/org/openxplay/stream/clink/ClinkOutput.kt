@@ -276,11 +276,20 @@ public class ClinkOutput(
             var format: VideoFormat? = null
             var avc: AvcConfig? = null
             var hvc: HevcConfig? = null
-            val hevcPlaceholder by lazy { BundledHevcPlaceholderVideo() }
-            val hevcPlaceholderConfig by lazy { HevcConfig.parse(hevcPlaceholder.format.config) }
-            val placeholderConfig = AvcConfig.parse(placeholder.format.config)
-            require(placeholder.frames.isNotEmpty() && placeholder.fps > 0 &&
-                Nal.isKeyFrame(placeholder.frames.first(), VideoCodec.H264))
+            // The head unit's decoder is set up for the negotiated WFD mode, so the placeholder must
+            // match that size: 720p keeps the original bundle, 1080p uses the 1920x1080 one.
+            val hevcPlaceholders = mutableMapOf<Pair<Int, Int>, BundledHevcPlaceholderVideo>()
+            val avcPlaceholders = mutableMapOf<Pair<Int, Int>, BundledPlaceholderVideo>()
+            val hevcPlaceholderConfigs = mutableMapOf<Pair<Int, Int>, HevcConfig>()
+            val avcPlaceholderConfigs = mutableMapOf<Pair<Int, Int>, AvcConfig>()
+            fun hevcPlaceholderAt(size: Pair<Int, Int>): BundledHevcPlaceholderVideo =
+                hevcPlaceholders.getOrPut(size) { BundledHevcPlaceholderVideo(size.first, size.second) }
+            fun avcPlaceholderAt(size: Pair<Int, Int>): BundledPlaceholderVideo =
+                avcPlaceholders.getOrPut(size) { BundledPlaceholderVideo(size.first, size.second) }
+            fun hevcPlaceholderConfigAt(size: Pair<Int, Int>): HevcConfig =
+                hevcPlaceholderConfigs.getOrPut(size) { HevcConfig.parse(hevcPlaceholderAt(size).format.config) }
+            fun avcPlaceholderConfigAt(size: Pair<Int, Int>): AvcConfig =
+                avcPlaceholderConfigs.getOrPut(size) { AvcConfig.parse(avcPlaceholderAt(size).format.config) }
             var placeholderIndex = 0
             var nextPlaceholder = 0L
             var outputPts = -1L
@@ -378,8 +387,10 @@ public class ClinkOutput(
                     audioReported = session
                     listener.diagnostic("audio negotiated media=${session.mediaAudio}")
                 }
-                require(session.videoSize == (placeholder.format.width to placeholder.format.height)) { "placeholder_timing_mismatch" }
-                val clip = if (session.hevcEnabled) hevcPlaceholder else placeholder
+                // The placeholder must match the negotiated mode: the head unit sizes its decoder from
+                // the mode and renders the stream at that size, so a mismatch stays black.
+                val clip = if (session.hevcEnabled) hevcPlaceholderAt(session.videoSize) else avcPlaceholderAt(session.videoSize)
+                require(session.videoSize == (clip.format.width to clip.format.height)) { "placeholder_timing_mismatch" }
                 val sessionCodec = clip.format.codec
                 fun transport(): TsMuxer {
                     if (muxer == null) {
@@ -426,7 +437,7 @@ public class ClinkOutput(
                     val wasLive = gate.live
                     if (gate.accept(f.keyFrame)) {
                         if (!wasLive) {
-                            liveOffset = maxOf(0L, outputPts + 1_000_000 / placeholder.fps,
+                            liveOffset = maxOf(0L, outputPts + 1_000_000 / clip.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
                             // The absolute PTS decides whether the receiver renders at all: a video timeline far
                             // ahead of the audio clock keeps frames in the receiver's future, so traffic and
@@ -459,12 +470,12 @@ public class ClinkOutput(
                 val now = System.nanoTime()
                 if (writable && gate.placeholder && now >= nextPlaceholder && (!everLive || now - liveFrameAt > 3_000_000_000)) {
                     val data = clip.frames[placeholderIndex]
-                    val pts = maxOf(0L, transportPts + 1, outputPts + 1_000_000 / placeholder.fps)
+                    val pts = maxOf(0L, transportPts + 1, outputPts + 1_000_000 / clip.fps)
                     val result = emit(session, pts) {
                         val mux = transport()
                         if (clip.format.codec == VideoCodec.H265)
-                            mux.writeVideo(data, hevcPlaceholderConfig, pts, placeholderIndex == 0)
-                        else mux.writeVideo(data, placeholderConfig, pts, placeholderIndex == 0)
+                            mux.writeVideo(data, hevcPlaceholderConfigAt(session.videoSize), pts, placeholderIndex == 0)
+                        else mux.writeVideo(data, avcPlaceholderConfigAt(session.videoSize), pts, placeholderIndex == 0)
                     }
                     outputPts = pts; transportPts = pts
                     if (result == Emit.DROPPED) { if (trace !== ClinkTrace.NONE) failedVideo++; placeholderIndex = 0 } else {
@@ -473,7 +484,7 @@ public class ClinkOutput(
                         placeholderIndex = (placeholderIndex + 1) % clip.frames.size
                     }
                     if (result == Emit.LATE) { writable = false; lateVideo = true }
-                    nextPlaceholder = now + 1_000_000_000 / placeholder.fps
+                    nextPlaceholder = now + 1_000_000_000 / clip.fps
                 }
                 // Anchor audio during the placeholder, then share the live video's exact offset.
                 if (session.mediaAudio) repeat(4) {
