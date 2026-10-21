@@ -63,8 +63,7 @@ class ClinkAudioLoopbackTest {
         }
     }
 
-    @Test fun `AAC access units share the video clock and RTP transport`() = Loop().use { loop ->
-        val clip = BaselineClip()
+    @Test fun `AAC access units share the video clock and RTP transport`() = Loop().use { loop ->        val clip = BaselineClip()
         val base = 3_000_000_000_000L
         loop.output.onVideoFormat(ScreenId.MAIN, clip.format)
         fun video(index: Int) = loop.output.onVideoFrame(VideoFrame(ScreenId.MAIN, loop.session,
@@ -84,7 +83,8 @@ class ClinkAudioLoopbackTest {
         assertEquals("AAC 00000001 00", loop.vehicle.selectedAudio)
         assertEquals(setOf(AudioCodec.AAC_LC, AudioCodec.PCM_S16LE), loop.caps.last().audio)
         assertTrue(loop.caps.last().microphone)
-        // The most recently started MEDIA stream owns the single AAC track.
+        // Every AAC stream shares the transport's single audio PID, so a second one is added to it
+        // rather than replacing the first.
         loop.output.onAudioFormat(3, AudioFormat(3, AudioRole.MEDIA, AudioCodec.AAC_LC, 48000, 2, byteArrayOf(0x11, 0x90.toByte())))
         loop.packet(0, byteArrayOf(1), base + 66_666)
         loop.packet(3, au, base + 66_666)
@@ -93,6 +93,32 @@ class ClinkAudioLoopbackTest {
         // Progress on a worker delivers the unsupported-format diagnostic.
         loop.vehicle.await("diagnostic", condition = { "unsupported_media_audio:4" in loop.diagnostics })
         assertContains(loop.diagnostics, "unsupported_media_audio:4")
+    }
+
+    @Test fun `a navigation prompt plays over the music on the same audio track`() = Loop().use { loop ->
+        // The phone sends a navigation prompt as AAC on a second stream, with the same shape as
+        // the music. Both reach the head unit on the transport's single audio PID, so the prompt
+        // is heard over the music instead of taking the voice channel, which would duck it.
+        val clip = BaselineClip()
+        val base = 3_000_000_000_000L
+        loop.output.onVideoFormat(ScreenId.MAIN, clip.format)
+        loop.output.onVideoFrame(VideoFrame(ScreenId.MAIN, loop.session, clip.frames[0], base, true, System.nanoTime()))
+        loop.output.onVideoFrame(VideoFrame(ScreenId.MAIN, loop.session, clip.frames[1], base + 33_333L, false, System.nanoTime()))
+        loop.vehicle.await("live video") { loop.vehicle.accessUnits.any { it.size == 640 to 360 } }
+        val music = AudioFormat(10, AudioRole.MEDIA, AudioCodec.AAC_LC, 48000, 2, byteArrayOf(0x11, 0x90.toByte()))
+        val prompt = AudioFormat(13, AudioRole.OTHER, AudioCodec.AAC_LC, 48000, 2, byteArrayOf(0x11, 0x90.toByte()))
+        loop.output.onAudioFormat(10, music)
+        loop.output.onAudioFormat(13, prompt)
+        val musicAu = byteArrayOf(0x21, 0x10, 0x56, 0x78)
+        val promptAu = byteArrayOf(0x21, 0x10, 0x12, 0x34)
+        loop.packet(10, musicAu, base + 33_333)
+        loop.vehicle.await("music AAC PES") { loop.vehicle.audioUnits.size == 1 }
+        loop.packet(13, promptAu, base + 50_000)
+        loop.vehicle.await("prompt AAC PES") { loop.vehicle.audioUnits.size == 2 }
+        // Both reached the head unit; neither replaced the other.
+        val payloads = loop.vehicle.audioUnits.map { Adts.parse(it.data).single().data }
+        assertTrue(payloads.any { it.contentEquals(musicAu) }, "music missing: ${payloads.size} units")
+        assertTrue(payloads.any { it.contentEquals(promptAu) }, "prompt missing: ${payloads.size} units")
     }
 
     @Test fun `media audio works during the placeholder and a full audio queue cannot stall video`() = Loop().use { loop ->

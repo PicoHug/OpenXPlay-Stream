@@ -182,18 +182,26 @@ public class ClinkOutput(
             if (!run.active.get()) return
             val previous = run.mediaStream
             run.mediaFormats.remove(stream)
-            if (format?.role == AudioRole.MEDIA) {
-                val supported = format.codec == AudioCodec.AAC_LC && format.sampleRate == 48000 && format.channels == 2 &&
-                    format.config?.contentEquals(byteArrayOf(0x11, 0x90.toByte())) == true
-                if (supported) run.mediaFormats[stream] = format
-                else if (run.diagnostics.size < 31) {
+            // Every stream that reaches the head unit's speakers shares the transport's single
+            // audio PID. Music is one of them, and so is a navigation prompt or an app call:
+            // the phone sends those as type 100 with audioType "default", which is the same pair a
+            // system sound uses. They arrive as AAC and are played next to the music, the way a
+            // head unit plays a turn instruction, instead of taking the voice channel, whose
+            // handshake makes the head unit duck the music (2026-10-21).
+            if (format != null && format.codec == AudioCodec.AAC_LC && format.sampleRate == 48000 &&
+                format.channels == 2 && format.config?.contentEquals(byteArrayOf(0x11, 0x90.toByte())) == true) {
+                run.mediaFormats[stream] = format
+            } else if (format != null && format.role == AudioRole.MEDIA) {
+                if (run.diagnostics.size < 31) {
                     run.diagnostics.addLast("unsupported_media_audio:$stream")
                     run.diagnostics.addLast("audio unsupported_media stream=$stream codec=${format.codec} " +
                         "rate=${format.sampleRate} channels=${format.channels} config=${format.config?.joinToString("") { "%02x".format(it) }}")
                 }
             }
+            // The streams share one PID, so the newest one does not replace the others. Only a
+            // stream that leaves the media set clears the queue, and only then.
             run.mediaStream = run.mediaFormats.keys.lastOrNull()
-            if (previous != run.mediaStream || previous == stream) { run.audio.clear(); run.audioBytes = 0 }
+            if (previous != run.mediaStream && previous !in run.mediaFormats.keys) { run.audio.clear(); run.audioBytes = 0 }
             run.voiceStreams.remove(stream)
             if (format != null && voiceRole(format.role) && format.codec == AudioCodec.PCM_S16LE &&
                 format.sampleRate in 8000..48000 && format.channels in 1..2) run.voiceStreams.add(stream)
@@ -204,7 +212,11 @@ public class ClinkOutput(
         val run = current ?: return
         synchronized(run.lock) {
             if (!run.active.get() || packet.session != run.inputSession) return
-            if (packet.stream == run.mediaStream) {
+            // Every stream in the media set shares the transport's audio PID: the music and, when
+            // the phone sends one, a navigation prompt or an app call. They are interleaved in
+            // arrival order, which is their own timestamp order, so the head unit plays them the
+            // way it plays a turn instruction over the music.
+            if (packet.stream in run.mediaFormats) {
                 if (packet.data.size !in 1..8184) return
                 while (run.audio.isNotEmpty() && mediaQueueFull(run.audio.size, run.audioBytes + packet.data.size,
                         mediaQueueSpanUs(packet.ptsUs, run.audio.first.ptsUs))) {
